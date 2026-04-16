@@ -38,10 +38,10 @@ const VALID_STANDS = [
 const KNOWN_NAMES = ["이영식", "박종규", "김우석", "윤기선", "최용준"];
 
 const CROP = {
-  table:  { x1: 0.03, y1: 0.04, x2: 0.985, y2: 0.99 },
-  flight: { x1: 0.00, y1: 0.04, x2: 0.15, y2: 0.995 },
-  name:   { x1: 0.60, y1: 0.04, x2: 0.79, y2: 0.995 },
-  stand:  { x1: 0.88, y1: 0.04, x2: 1.00, y2: 0.995 }
+  table:  { x1: 0.035, y1: 0.035, x2: 0.982, y2: 0.992 },
+  flight: { x1: 0.000, y1: 0.045, x2: 0.130, y2: 0.995 },
+  name:   { x1: 0.610, y1: 0.045, x2: 0.755, y2: 0.995 },
+  stand:  { x1: 0.900, y1: 0.045, x2: 0.985, y2: 0.995 }
 };
 
 function setStatus(text) {
@@ -104,6 +104,7 @@ function compactText(v) {
 
 function normalizeStand(v) {
   if (!v) return "";
+
   let s = String(v).toUpperCase().replace(/\s+/g, "").trim();
 
   const map = {
@@ -128,6 +129,7 @@ function normalizeFlightNo(v, removeLeadingZero = true) {
   if (!v) return "";
 
   let s = String(v).toUpperCase().replace(/\s+/g, "").trim();
+
   s = s
     .replace(/^KJO/, "KJ0")
     .replace(/^KJQ/, "KJ0")
@@ -218,16 +220,34 @@ function preprocessFullImage(img) {
   const canvas = createCanvas(Math.floor(img.width * scale), Math.floor(img.height * scale));
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
 
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+function preprocessColumn(canvas, type) {
+  const out = createCanvas(canvas.width, canvas.height);
+  const ctx = out.getContext("2d");
+  ctx.drawImage(canvas, 0, 0);
+
+  const imageData = ctx.getImageData(0, 0, out.width, out.height);
   const data = imageData.data;
 
   for (let i = 0; i < data.length; i += 4) {
     const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
     let v = gray;
-    if (gray > 208) v = 255;
-    else if (gray < 150) v = 0;
-    else v = gray > 182 ? 230 : 75;
+
+    if (type === "flight") {
+      if (gray > 210) v = 255;
+      else if (gray < 160) v = 0;
+      else v = 90;
+    } else if (type === "name") {
+      if (gray > 215) v = 255;
+      else if (gray < 135) v = 0;
+      else v = 150;
+    } else if (type === "stand") {
+      if (gray > 205) v = 255;
+      else if (gray < 150) v = 0;
+      else v = 70;
+    }
 
     data[i] = v;
     data[i + 1] = v;
@@ -235,7 +255,7 @@ function preprocessFullImage(img) {
   }
 
   ctx.putImageData(imageData, 0, 0);
-  return canvas;
+  return out;
 }
 
 function cropCanvasByRatio(sourceCanvas, ratio) {
@@ -250,10 +270,22 @@ function cropCanvasByRatio(sourceCanvas, ratio) {
   return out;
 }
 
-async function recognizeCanvasDetailed(canvas, lang) {
-  return await Tesseract.recognize(canvas, lang, {
+async function recognizeCanvasDetailed(canvas, lang, type) {
+  const options = {
     logger: () => {}
-  });
+  };
+
+  if (type === "flight") {
+    options.tessedit_pageseg_mode = 6;
+    options.tessedit_char_whitelist = "KJ0123456789";
+  } else if (type === "stand") {
+    options.tessedit_pageseg_mode = 6;
+    options.tessedit_char_whitelist = "0123456789LR";
+  } else if (type === "name") {
+    options.tessedit_pageseg_mode = 6;
+  }
+
+  return await Tesseract.recognize(canvas, lang, options);
 }
 
 function sortWords(words) {
@@ -300,12 +332,38 @@ function groupWordsIntoRows(words, tolerance = 18) {
     .map((row) => {
       const sortedWords = [...row.words].sort((a, b) => (a.bbox?.x0 ?? 0) - (b.bbox?.x0 ?? 0));
       const text = sortedWords.map((w) => normalizeText(w.text)).join(" ").trim();
-      return {
-        y: row.avgY,
-        text
-      };
+      return { y: row.avgY, text };
     })
     .filter((row) => row.text);
+}
+
+function linesFromTesseract(result) {
+  const lines = result?.data?.lines || [];
+  return lines
+    .map((line) => ({
+      y: line?.bbox?.y0 ?? 0,
+      text: normalizeText(line?.text || "")
+    }))
+    .filter((row) => row.text);
+}
+
+function mergeNearRows(rows, tolerance = 12) {
+  if (!rows.length) return [];
+
+  const sorted = [...rows].sort((a, b) => a.y - b.y);
+  const out = [];
+
+  for (const row of sorted) {
+    const last = out[out.length - 1];
+    if (last && Math.abs(last.y - row.y) <= tolerance) {
+      last.text = normalizeText(`${last.text} ${row.text}`);
+      last.y = (last.y + row.y) / 2;
+    } else {
+      out.push({ ...row });
+    }
+  }
+
+  return out;
 }
 
 function cleanFlightRows(rows) {
@@ -337,6 +395,26 @@ function cleanNameRows(rows) {
       if (/RO|LD|R\/O|L\/D/i.test(c)) return false;
       return /[A-Z가-힣\-]/i.test(c);
     });
+}
+
+function pickBetterNameRows(nameResult) {
+  const fromLines = cleanNameRows(mergeNearRows(linesFromTesseract(nameResult), 10));
+  const fromWords = cleanNameRows(groupWordsIntoRows(nameResult?.data?.words || [], 16));
+
+  const score = (arr) => {
+    let s = 0;
+    for (const line of arr) {
+      const c = compactText(line);
+      if (/^[ABC]$/.test(c)) s += 3;
+      if (/^[ABC][가-힣]{2,4}$/.test(c)) s += 8;
+      if (KNOWN_NAMES.some((name) => c.includes(name))) s += 10;
+      if (/[가-힣]/.test(c)) s += 2;
+      if (/[@#$%^&*_=+]/.test(c)) s -= 3;
+    }
+    return s;
+  };
+
+  return score(fromLines) >= score(fromWords) ? fromLines : fromWords;
 }
 
 function parseNameLine(rawLine) {
@@ -536,30 +614,36 @@ async function extractRowsBySeparatedColumns(file) {
   const processed = preprocessFullImage(img);
 
   const tableCanvas = cropCanvasByRatio(processed, CROP.table);
-  const flightCanvas = cropCanvasByRatio(tableCanvas, CROP.flight);
-  const nameCanvas = cropCanvasByRatio(tableCanvas, CROP.name);
-  const standCanvas = cropCanvasByRatio(tableCanvas, CROP.stand);
+
+  const flightCanvasRaw = cropCanvasByRatio(tableCanvas, CROP.flight);
+  const nameCanvasRaw = cropCanvasByRatio(tableCanvas, CROP.name);
+  const standCanvasRaw = cropCanvasByRatio(tableCanvas, CROP.stand);
+
+  const flightCanvas = preprocessColumn(flightCanvasRaw, "flight");
+  const nameCanvas = preprocessColumn(nameCanvasRaw, "name");
+  const standCanvas = preprocessColumn(standCanvasRaw, "stand");
 
   setStatus("편명 열 OCR 중...");
-  const flightResult = await recognizeCanvasDetailed(flightCanvas, "eng");
+  const flightResult = await recognizeCanvasDetailed(flightCanvas, "eng", "flight");
 
   setStatus("이름 열 OCR 중...");
-  const nameResult = await recognizeCanvasDetailed(nameCanvas, "kor+eng");
+  const nameResult = await recognizeCanvasDetailed(nameCanvas, "kor+eng", "name");
 
   setStatus("주기장 열 OCR 중...");
-  const standResult = await recognizeCanvasDetailed(standCanvas, "eng");
+  const standResult = await recognizeCanvasDetailed(standCanvas, "eng", "stand");
 
-  const flightWords = flightResult?.data?.words || [];
-  const nameWords = nameResult?.data?.words || [];
-  const standWords = standResult?.data?.words || [];
+  const flightRowsRaw = mergeNearRows(linesFromTesseract(flightResult), 10);
+  const standRowsRaw = mergeNearRows(linesFromTesseract(standResult), 10);
 
-  const flightRowsRaw = groupWordsIntoRows(flightWords, 16);
-  const nameRowsRaw = groupWordsIntoRows(nameWords, 16);
-  const standRowsRaw = groupWordsIntoRows(standWords, 16);
+  const flightRows = cleanFlightRows(
+    flightRowsRaw.length ? flightRowsRaw : groupWordsIntoRows(flightResult?.data?.words || [], 16)
+  );
 
-  const flightRows = cleanFlightRows(flightRowsRaw);
-  const nameRowsText = cleanNameRows(nameRowsRaw);
-  const standRows = cleanStandRows(standRowsRaw);
+  const nameRowsText = pickBetterNameRows(nameResult);
+
+  const standRows = cleanStandRows(
+    standRowsRaw.length ? standRowsRaw : groupWordsIntoRows(standResult?.data?.words || [], 16)
+  );
 
   const parsedNameRows = nameRowsText.map(parseNameLine);
   const nameMap = buildNameMap(parsedNameRows);
