@@ -39,9 +39,9 @@ const KNOWN_NAMES = ["이영식", "박종규", "김우석", "윤기선", "최용
 
 const CROP = {
   table:  { x1: 0.035, y1: 0.035, x2: 0.982, y2: 0.992 },
-  flight: { x1: 0.000, y1: 0.045, x2: 0.130, y2: 0.995 },
-  name:   { x1: 0.610, y1: 0.045, x2: 0.755, y2: 0.995 },
-  stand:  { x1: 0.900, y1: 0.045, x2: 0.985, y2: 0.995 }
+  flight: { x1: 0.000, y1: 0.045, x2: 0.125, y2: 0.995 },
+  name:   { x1: 0.640, y1: 0.045, x2: 0.730, y2: 0.995 },
+  stand:  { x1: 0.932, y1: 0.045, x2: 0.975, y2: 0.995 }
 };
 
 function setStatus(text) {
@@ -90,7 +90,6 @@ function getSearchKeyword() {
 function normalizeText(v) {
   return String(v || "")
     .replace(/\u00A0/g, " ")
-    .replace(/[|]/g, "I")
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
     .replace(/[，]/g, ",")
@@ -111,8 +110,10 @@ function normalizeStand(v) {
     "6741": "674L",
     "674I": "674L",
     "674|": "674L",
+    "674L.": "674L",
     "6748": "674R",
-    "674B": "674R"
+    "674B": "674R",
+    "674R.": "674R"
   };
 
   s = map[s] || s;
@@ -121,8 +122,14 @@ function normalizeStand(v) {
 
 function extractStandFromText(text) {
   if (!text) return "";
-  const m = String(text).toUpperCase().match(/\b(621|622|623|624|625|626|627|672|673|674[LRI18B|])\b/);
-  return m ? normalizeStand(m[1]) : "";
+  const upper = String(text).toUpperCase().replace(/\s+/g, "");
+  const match =
+    upper.match(/(621|622|623|624|625|626|627|672|673|674L|674R|674I|6741|6748|674B|\b674\b)/);
+
+  if (!match) return "";
+  const found = match[1];
+  if (found === "674") return "";
+  return normalizeStand(found);
 }
 
 function normalizeFlightNo(v, removeLeadingZero = true) {
@@ -137,6 +144,7 @@ function normalizeFlightNo(v, removeLeadingZero = true) {
     .replace(/^KJL/, "KJ1")
     .replace(/^KI/, "KJ")
     .replace(/^K\|/, "KJ")
+    .replace(/^K\//, "KJ")
     .replace(/[^A-Z0-9]/g, "");
 
   const m = s.match(/^KJ(\d{3,4})$/);
@@ -154,10 +162,10 @@ function extractFlightNoFromText(text, removeLeadingZero = true) {
 
   const upper = String(text).toUpperCase();
 
-  let m = upper.match(/\bKJ[\s\-_:|.,]*\d{3,4}\b/);
+  let m = upper.match(/\bKJ[\s\-_:|./,]*\d{3,4}\b/);
   if (m) return normalizeFlightNo(m[0], removeLeadingZero);
 
-  m = upper.match(/\bK[JIOQL1|][\s\-_:|.,]*\d{3,4}\b/);
+  m = upper.match(/\bK[JIOQL1|/][\s\-_:|./,]*\d{3,4}\b/);
   if (m) return normalizeFlightNo(m[0], removeLeadingZero);
 
   m = upper.match(/\bK\s*J\s*\d{3,4}\b/);
@@ -175,7 +183,8 @@ function normalizeKnownName(v) {
     .replace(/^[ABC]\s*/i, "")
     .replace(/^[ㄱㄴㄷ]\s*/i, "")
     .replace(/^0\s*/, "")
-    .replace(/^O\s*/, "");
+    .replace(/^O\s*/, "")
+    .replace(/[^A-Z가-힣0-9]/gi, "");
 
   const nameMap = {
     "박종구": "박종규",
@@ -216,8 +225,11 @@ async function fileToImage(file) {
 }
 
 function preprocessFullImage(img) {
-  const scale = 2.2;
-  const canvas = createCanvas(Math.floor(img.width * scale), Math.floor(img.height * scale));
+  const scale = 2.3;
+  const canvas = createCanvas(
+    Math.floor(img.width * scale),
+    Math.floor(img.height * scale)
+  );
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   return canvas;
@@ -236,17 +248,17 @@ function preprocessColumn(canvas, type) {
     let v = gray;
 
     if (type === "flight") {
-      if (gray > 210) v = 255;
-      else if (gray < 160) v = 0;
-      else v = 90;
+      if (gray > 212) v = 255;
+      else if (gray < 158) v = 0;
+      else v = 88;
     } else if (type === "name") {
-      if (gray > 215) v = 255;
-      else if (gray < 135) v = 0;
-      else v = 150;
+      if (gray > 218) v = 255;
+      else if (gray < 138) v = 0;
+      else v = 152;
     } else if (type === "stand") {
-      if (gray > 205) v = 255;
-      else if (gray < 150) v = 0;
-      else v = 70;
+      if (gray > 208) v = 255;
+      else if (gray < 152) v = 0;
+      else v = 68;
     }
 
     data[i] = v;
@@ -270,6 +282,83 @@ function cropCanvasByRatio(sourceCanvas, ratio) {
   return out;
 }
 
+function ensureDebugPreviewSection() {
+  let wrap = document.getElementById("debugCropSection");
+  if (wrap) return wrap;
+
+  wrap = document.createElement("section");
+  wrap.id = "debugCropSection";
+  wrap.className = "card";
+  wrap.innerHTML = `
+    <h2>6. Crop 디버그 미리보기</h2>
+    <div style="margin-top:16px; display:grid; gap:16px;">
+      <div>
+        <div style="font-weight:700; margin-bottom:8px;">table crop</div>
+        <div id="debugBoxTable" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
+      </div>
+      <div>
+        <div style="font-weight:700; margin-bottom:8px;">flight crop</div>
+        <div id="debugBoxFlight" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
+      </div>
+      <div>
+        <div style="font-weight:700; margin-bottom:8px;">name crop</div>
+        <div id="debugBoxName" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
+      </div>
+      <div>
+        <div style="font-weight:700; margin-bottom:8px;">stand crop</div>
+        <div id="debugBoxStand" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
+      </div>
+    </div>
+    <div style="margin-top:12px; color:#64748b; font-size:13px; line-height:1.6;">
+      각 미리보기를 보고 이름/주기장 칸이 정확히 잘렸는지 확인하세요.
+      이름 칸에 다른 열 글자가 섞여 보이면 <code>CROP.name</code> 좌표를 줄이고,
+      주기장 칸에 표 전체가 보이면 <code>CROP.stand</code> 좌표를 더 오른쪽으로 좁히면 됩니다.
+    </div>
+  `;
+
+  const container = document.querySelector(".container");
+  if (container) container.appendChild(wrap);
+  return wrap;
+}
+
+function cloneCanvasForDisplay(canvas, maxWidth = 1000) {
+  const out = document.createElement("canvas");
+  const ratio = Math.min(1, maxWidth / canvas.width);
+  out.width = Math.max(1, Math.floor(canvas.width * ratio));
+  out.height = Math.max(1, Math.floor(canvas.height * ratio));
+  const ctx = out.getContext("2d");
+  ctx.drawImage(canvas, 0, 0, out.width, out.height);
+  out.style.display = "block";
+  out.style.maxWidth = "100%";
+  out.style.height = "auto";
+  out.style.borderRadius = "8px";
+  out.style.background = "#fff";
+  return out;
+}
+
+function renderDebugCanvas(boxId, canvas, labelText = "") {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  box.innerHTML = "";
+
+  const meta = document.createElement("div");
+  meta.style.fontSize = "12px";
+  meta.style.color = "#475569";
+  meta.style.marginBottom = "8px";
+  meta.textContent = `${labelText} (${canvas.width} x ${canvas.height})`;
+
+  box.appendChild(meta);
+  box.appendChild(cloneCanvasForDisplay(canvas));
+}
+
+function renderCropDebugPreviews(tableCanvas, flightCanvas, nameCanvas, standCanvas) {
+  ensureDebugPreviewSection();
+  renderDebugCanvas("debugBoxTable", tableCanvas, "table");
+  renderDebugCanvas("debugBoxFlight", flightCanvas, "flight");
+  renderDebugCanvas("debugBoxName", nameCanvas, "name");
+  renderDebugCanvas("debugBoxStand", standCanvas, "stand");
+}
+
 async function recognizeCanvasDetailed(canvas, lang, type) {
   const options = {
     logger: () => {}
@@ -279,7 +368,7 @@ async function recognizeCanvasDetailed(canvas, lang, type) {
     options.tessedit_pageseg_mode = 6;
     options.tessedit_char_whitelist = "KJ0123456789";
   } else if (type === "stand") {
-    options.tessedit_pageseg_mode = 6;
+    options.tessedit_pageseg_mode = 11;
     options.tessedit_char_whitelist = "0123456789LR";
   } else if (type === "name") {
     options.tessedit_pageseg_mode = 6;
@@ -330,7 +419,9 @@ function groupWordsIntoRows(words, tolerance = 18) {
 
   return rows
     .map((row) => {
-      const sortedWords = [...row.words].sort((a, b) => (a.bbox?.x0 ?? 0) - (b.bbox?.x0 ?? 0));
+      const sortedWords = [...row.words].sort(
+        (a, b) => (a.bbox?.x0 ?? 0) - (b.bbox?.x0 ?? 0)
+      );
       const text = sortedWords.map((w) => normalizeText(w.text)).join(" ").trim();
       return { y: row.avgY, text };
     })
@@ -382,7 +473,7 @@ function cleanStandRows(rows) {
     .filter((text) => {
       const c = compactText(text).toUpperCase();
       if (!c || c.includes("주기장")) return false;
-      return /\d/.test(c);
+      return /(621|622|623|624|625|626|627|672|673|674)/.test(c);
     });
 }
 
@@ -398,8 +489,12 @@ function cleanNameRows(rows) {
 }
 
 function pickBetterNameRows(nameResult) {
-  const fromLines = cleanNameRows(mergeNearRows(linesFromTesseract(nameResult), 10));
-  const fromWords = cleanNameRows(groupWordsIntoRows(nameResult?.data?.words || [], 16));
+  const fromLines = cleanNameRows(
+    mergeNearRows(linesFromTesseract(nameResult), 10)
+  );
+  const fromWords = cleanNameRows(
+    groupWordsIntoRows(nameResult?.data?.words || [], 16)
+  );
 
   const score = (arr) => {
     let s = 0;
@@ -623,6 +718,8 @@ async function extractRowsBySeparatedColumns(file) {
   const nameCanvas = preprocessColumn(nameCanvasRaw, "name");
   const standCanvas = preprocessColumn(standCanvasRaw, "stand");
 
+  renderCropDebugPreviews(tableCanvas, flightCanvas, nameCanvas, standCanvas);
+
   setStatus("편명 열 OCR 중...");
   const flightResult = await recognizeCanvasDetailed(flightCanvas, "eng", "flight");
 
@@ -655,6 +752,18 @@ async function extractRowsBySeparatedColumns(file) {
   );
 
   const debugText = [
+    "[CROP.table]",
+    JSON.stringify(CROP.table),
+    "",
+    "[CROP.flight]",
+    JSON.stringify(CROP.flight),
+    "",
+    "[CROP.name]",
+    JSON.stringify(CROP.name),
+    "",
+    "[CROP.stand]",
+    JSON.stringify(CROP.stand),
+    "",
     "[편명 열 TEXT]",
     flightResult?.data?.text || "",
     "",
