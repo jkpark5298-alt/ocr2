@@ -58,8 +58,8 @@ const FIXED_COLUMN_HINTS = {
 };
 
 const ROW_MATCH_TOLERANCE = 18;
-const NAME_SLOT_MAX_TOLERANCE = 16;
-const NAME_ORDINAL_WEIGHT = 6;
+const NAME_SLOT_MAX_TOLERANCE = 14;
+const NAME_ORDINAL_WEIGHT = 8;
 const INF = 1e9;
 
 function setStatus(text) {
@@ -958,10 +958,12 @@ function assignNamesToSlotsConservatively(slots, nameCandidates) {
   const n = slots.length;
   const m = nameCandidates.length;
 
-  if (!n || !m) return {
-    slots,
-    assignmentDebug: []
-  };
+  if (!n || !m) {
+    return {
+      slots,
+      assignmentDebug: []
+    };
+  }
 
   const tol = getNameSlotTolerance(slots);
 
