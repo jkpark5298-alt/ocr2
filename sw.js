@@ -1,4 +1,4 @@
-const CACHE_NAME = "ocr-stand-search-v4-pwa";
+const CACHE_NAME = "ocr-stand-search-v9";
 
 const ASSETS = [
   "./",
@@ -40,11 +40,9 @@ self.addEventListener("fetch", (event) => {
       return fetch(request)
         .then((response) => {
           const clone = response.clone();
-
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(request, clone);
           });
-
           return response;
         })
         .catch(() => caches.match("./index.html"));
