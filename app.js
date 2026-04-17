@@ -210,7 +210,7 @@ function extractFlightNoFromText(text, removeLeadingZero = true) {
 function stripNamePrefix(v) {
   return String(v || "")
     .replace(/^[>\-_=+~*.,:;!?()$$$$$${}\\/]+/, "")
-    .replace(/^\s*[ABC]\s*/i, "")
+    .replace(/^[ABC8]\s*/i, "")
     .trim();
 }
 
@@ -220,7 +220,7 @@ function normalizeKnownName(v) {
 
   s = s
     .replace(/^[>\-_=+~*.,:;!?()$$$$$${}\\/]+/g, "")
-    .replace(/^[ABC]\s*/i, "")
+    .replace(/^[ABC8]\s*/i, "")
     .replace(/^0\s*/, "")
     .replace(/^O\s*/, "")
     .replace(/[^A-Z가-힣0-9]/gi, "");
@@ -231,19 +231,25 @@ function normalizeKnownName(v) {
     "박종큐": "박종규",
     "박종7": "박종규",
     "박종9": "박종규",
+
     "강정형": "강정형",
     "강정영": "강정형",
     "강정헝": "강정형",
+
     "정찬호": "정찬호",
     "정찬후": "정찬호",
     "정찬흐": "정찬호",
+
     "이영식": "이영식",
     "이영삭": "이영식",
     "이영직": "이영식",
+
     "김우석": "김우석",
     "김우서": "김우석",
+
     "윤기선": "윤기선",
     "윤기션": "윤기선",
+
     "최용준": "최용준",
     "최용순": "최용준",
     "최용춘": "최용준"
@@ -515,7 +521,7 @@ function cleanNameRows(rows) {
     const c = compactText(text);
     if (!c) return false;
     if (c === "-") return true;
-    return /[ABC가-힣]/i.test(c);
+    return /[ABC8가-힣]/i.test(c);
   });
 }
 
@@ -527,8 +533,8 @@ function pickBetterNameRows(nameResult) {
     let s = 0;
     for (const line of arr) {
       const c = compactText(line);
-      if (/^[ABC]$/.test(c)) s += 3;
-      if (/^[ABC][가-힣]{2,4}$/.test(c)) s += 8;
+      if (/^[ABC8]$/.test(c)) s += 3;
+      if (/^[ABC8][가-힣]{2,4}$/.test(c)) s += 8;
       if (KNOWN_NAMES.some((name) => c.includes(name))) s += 10;
       if (/[가-힣]/.test(c)) s += 2;
       if (/[@#$%^&*_=+]/.test(c)) s -= 4;
@@ -542,13 +548,24 @@ function pickBetterNameRows(nameResult) {
 function parseNameLine(rawLine) {
   const line = normalizeText(rawLine);
   const compact = compactText(line);
+
   if (!line) return { label: "", name: "", raw: "" };
 
-  if (compact === "-" || compact === "—" || compact === "_") {
+  if (
+    compact === "-" ||
+    compact === "—" ||
+    compact === "_" ||
+    compact === "." ||
+    compact === ".." ||
+    compact === "..." ||
+    compact === "·"
+  ) {
     return { label: "-", name: "", raw: line };
   }
 
-  const cleanedCompact = compact.replace(/^[>\-_=+~*.,:;!?]+/, "");
+  const cleanedCompact = compact
+    .replace(/^[>\-_=+~*.,:;!?]+/, "")
+    .replace(/^8/, "B");
 
   const full = cleanedCompact.match(/^([ABC])([가-힣]{2,4})$/i);
   if (full) {
@@ -561,16 +578,36 @@ function parseNameLine(rawLine) {
 
   const loose = cleanedCompact.match(/^([ABC])(.+)$/i);
   if (loose) {
+    const normalized = normalizeKnownName(loose[2]);
+
+    if (!KNOWN_NAMES.includes(normalized)) {
+      return {
+        label: loose[1].toUpperCase(),
+        name: "",
+        raw: line
+      };
+    }
+
     return {
       label: loose[1].toUpperCase(),
-      name: normalizeKnownName(loose[2]),
+      name: normalized,
+      raw: line
+    };
+  }
+
+  const normalized = normalizeKnownName(cleanedCompact);
+
+  if (!KNOWN_NAMES.includes(normalized)) {
+    return {
+      label: "",
+      name: "",
       raw: line
     };
   }
 
   return {
     label: "",
-    name: normalizeKnownName(cleanedCompact),
+    name: normalized,
     raw: line
   };
 }
@@ -578,17 +615,26 @@ function parseNameLine(rawLine) {
 function buildNameMap(parsedNameRows) {
   const map = {};
   for (const row of parsedNameRows) {
-    if (row.label && row.name) map[row.label] = row.name;
+    if (row.label && row.name && KNOWN_NAMES.includes(row.name)) {
+      map[row.label] = row.name;
+    }
   }
   return map;
 }
 
 function resolveNameRows(parsedNameRows, nameMap) {
   return parsedNameRows.map((row) => {
-    if (row.name) return row;
-    if (row.label && nameMap[row.label]) {
-      return { ...row, name: nameMap[row.label] };
+    if (row.name && KNOWN_NAMES.includes(row.name)) {
+      return row;
     }
+
+    if (!row.name) {
+      return {
+        ...row,
+        name: ""
+      };
+    }
+
     return row;
   });
 }
@@ -603,10 +649,12 @@ function mergeRows(flightRows, nameRows, standRows) {
     const standRaw = standRows[i] || "";
     const nameObj = nameRows[i] || { label: "", name: "", raw: "" };
 
+    const finalName = KNOWN_NAMES.includes(nameObj.name) ? nameObj.name : "";
+
     out.push({
       flightNo: extractFlightNoFromText(flightRaw, removeLeadingZero),
       stand: extractStandFromText(standRaw),
-      name: normalizeKnownName(nameObj.name || ""),
+      name: finalName,
       nameRaw: nameObj.raw || "",
       flightRaw,
       standRaw,
@@ -882,9 +930,9 @@ function hasEnoughStandRows(rows) {
 function hasEnoughNameRows(rows) {
   const valid = rows.filter((r) => {
     const p = parseNameLine(r);
-    return !!normalizeKnownName(p.name || "");
+    return !!(p.name && KNOWN_NAMES.includes(p.name));
   });
-  return valid.length >= 3;
+  return valid.length >= 2;
 }
 
 async function extractUsingRanges(tableCanvas, headerCanvas, columnRanges, modeLabel) {
