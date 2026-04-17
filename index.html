@@ -18,7 +18,7 @@
     }
 
     .container {
-      max-width: 980px;
+      max-width: 1080px;
       margin: 0 auto;
       padding: 20px 16px 40px;
     }
@@ -179,7 +179,7 @@
 
     #preview {
       max-width: 100%;
-      max-height: 480px;
+      max-height: 520px;
       display: none;
     }
 
@@ -267,8 +267,9 @@
   <div class="container">
     <h1 class="app-title">OCR 주기장 검색</h1>
     <p class="app-desc">
-      업로드한 표 이미지에서 <strong>편명 / 이름 / 주기장</strong> 열을 분리 OCR합니다.
-      이름 열의 <strong>A/B/C 코드도 실제 이름으로 자동 변환</strong>합니다.
+      표 이미지에서 <strong>편명 / 주기장 / R/O L/D 이름</strong>을 OCR로 추출합니다.
+      열 순서가 조금 달라도 <strong>헤더를 먼저 읽어서 위치를 찾는 방식</strong>입니다.
+      이름은 <strong>박종규 / A박종규 / B 박종규 / C박종규</strong> 형태를 모두 검색할 수 있게 처리합니다.
     </p>
 
     <section class="card">
@@ -304,8 +305,8 @@
 
         <div class="field">
           <label for="searchValue">검색어</label>
-          <input id="searchValue" type="text" value="박종규" placeholder="예: 박종규, 이영식, 김우석" />
-          <div class="readonly-note">예: B 박종규, 박종규 둘 다 검색 가능</div>
+          <input id="searchValue" type="text" value="박종규" placeholder="예: 박종규, A박종규, B 박종규" />
+          <div class="readonly-note">예: 박종규 검색 시 A박종규 / B박종규 / C박종규도 함께 잡히도록 처리</div>
         </div>
       </div>
 
@@ -314,7 +315,7 @@
         <div class="checkbox-row">
           <label><input type="checkbox" name="columns" value="flightNo" checked /> 편명</label>
           <label><input type="checkbox" name="columns" value="stand" checked /> 주기장</label>
-          <label><input type="checkbox" name="columns" value="name" /> 이름</label>
+          <label><input type="checkbox" name="columns" value="name" checked /> 이름</label>
           <label><input type="checkbox" name="columns" value="nameRaw" /> 이름원문</label>
           <label><input type="checkbox" name="columns" value="flightRaw" /> 편명원문</label>
           <label><input type="checkbox" name="columns" value="standRaw" /> 주기장원문</label>
@@ -352,7 +353,7 @@
 
       <div class="field" style="margin-top:16px;">
         <label for="copyOutput">복사 내용</label>
-        <textarea id="copyOutput" placeholder="예: 1. KJ934 / 934 / 621"></textarea>
+        <textarea id="copyOutput" placeholder="예: 1. KJ932 / 932 / 624"></textarea>
       </div>
 
       <div class="button-row">
@@ -365,13 +366,13 @@
       </div>
     </section>
 
-    <details class="card debug-card">
-      <summary>5. OCR 원문 디버그 (필요시 펼치기)</summary>
+    <details class="card">
+      <summary>5. OCR 원문 디버그</summary>
 
       <div style="margin-top:16px;">
         <div class="field">
           <label for="ocrRawOutput">OCR 전체 디버그</label>
-          <textarea id="ocrRawOutput" placeholder="열별 OCR 전체 내용이 표시됩니다."></textarea>
+          <textarea id="ocrRawOutput" placeholder="헤더 인식, 열 탐지, OCR 원문 등이 표시됩니다."></textarea>
         </div>
 
         <div class="field" style="margin-top:16px;">
@@ -380,7 +381,7 @@
         </div>
 
         <div class="footer-note">
-          기본은 숨김이며, 필요할 때만 펼쳐서 확인할 수 있습니다.
+          필요할 때만 펼쳐서 확인하세요.
         </div>
       </div>
     </details>
