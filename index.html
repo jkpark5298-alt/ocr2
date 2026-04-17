@@ -99,4 +99,290 @@
     select,
     textarea {
       width: 100%;
-      border
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 14px;
+      background: #fff;
+      color: #0f172a;
+      outline: none;
+    }
+
+    input[type="text"]:focus,
+    select:focus,
+    textarea:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    }
+
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      line-height: 1.5;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      border: 0;
+      border-radius: 12px;
+      padding: 0 16px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      transition: 0.15s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    .primary { background: #2563eb; color: #fff; }
+    .secondary { background: #e2e8f0; color: #0f172a; }
+    .success { background: #16a34a; color: #fff; }
+    .warn { background: #0f172a; color: #fff; }
+
+    .hidden-file {
+      position: fixed;
+      left: -9999px;
+      top: -9999px;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .preview-wrap {
+      border: 1px dashed #cbd5e1;
+      border-radius: 16px;
+      background: #f8fafc;
+      min-height: 220px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .preview-wrap.empty img { display: none; }
+
+    .preview-placeholder {
+      color: #64748b;
+      font-size: 14px;
+      text-align: center;
+      padding: 20px;
+    }
+
+    #preview {
+      max-width: 100%;
+      max-height: 520px;
+      display: none;
+    }
+
+    .checkbox-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 16px;
+      margin-top: 10px;
+    }
+
+    .checkbox-row label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .status {
+      margin-top: 12px;
+      font-size: 14px;
+      color: #334155;
+      font-weight: 600;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+    }
+
+    th, td {
+      border-bottom: 1px solid #e2e8f0;
+      padding: 12px 10px;
+      text-align: left;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    th {
+      background: #f1f5f9;
+      color: #334155;
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .footer-note {
+      margin-top: 10px;
+      color: #64748b;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .readonly-note {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #64748b;
+    }
+
+    @media (max-width: 720px) {
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+
+      .app-title {
+        font-size: 24px;
+      }
+
+      .card {
+        padding: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1 class="app-title">OCR 주기장 검색</h1>
+    <p class="app-desc">
+      표 이미지에서 <strong>편명 / 주기장 / R/O L/D 이름</strong>을 OCR로 추출합니다.
+    </p>
+
+    <section class="card">
+      <h2>1. 사진 선택</h2>
+
+      <div class="button-row">
+        <button id="cameraBtn" class="primary" type="button">카메라 촬영</button>
+        <button id="galleryBtn" class="secondary" type="button">갤러리 선택</button>
+      </div>
+
+      <input class="hidden-file" id="cameraInput" type="file" accept="image/*" capture="environment" />
+      <input class="hidden-file" id="galleryInput" type="file" accept="image/*" />
+
+      <div style="margin-top:16px;" id="previewWrap" class="preview-wrap empty">
+        <div id="previewPlaceholder" class="preview-placeholder">
+          선택한 이미지가 여기에 표시됩니다.
+        </div>
+        <img id="preview" alt="선택한 이미지 미리보기" />
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>2. 검색 조건</h2>
+
+      <div class="grid grid-2" style="margin-top:16px;">
+        <div class="field">
+          <label for="searchType">검색 기준</label>
+          <select id="searchType">
+            <option value="name" selected>이름</option>
+            <option value="raw">원문</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="searchValue">검색어</label>
+          <input id="searchValue" type="text" value="박종규" placeholder="예: 박종규, A박종규, B 박종규" />
+          <div class="readonly-note">박종규 검색 시 A박종규 / B박종규 / C박종규도 함께 검색</div>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:16px;">
+        <label>추출 컬럼 선택</label>
+        <div class="checkbox-row">
+          <label><input type="checkbox" name="columns" value="flightNo" checked /> 편명</label>
+          <label><input type="checkbox" name="columns" value="stand" checked /> 주기장</label>
+          <label><input type="checkbox" name="columns" value="name" checked /> 이름</label>
+          <label><input type="checkbox" name="columns" value="nameRaw" /> 이름원문</label>
+          <label><input type="checkbox" name="columns" value="flightRaw" /> 편명원문</label>
+          <label><input type="checkbox" name="columns" value="standRaw" /> 주기장원문</label>
+          <label><input type="checkbox" name="columns" value="raw" /> 합본원문</label>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:16px;">
+        <label>
+          <input id="removeLeadingZero" type="checkbox" checked />
+          편명 숫자 앞자리 0 제거
+        </label>
+      </div>
+
+      <div class="button-row">
+        <button id="runBtn" class="primary" type="button">OCR 실행</button>
+      </div>
+
+      <div id="status" class="status">대기 중</div>
+    </section>
+
+    <section class="card">
+      <h2>3. 결과 표</h2>
+      <div class="table-wrap" style="margin-top:16px;">
+        <table>
+          <thead id="resultTableHead"></thead>
+          <tbody id="resultTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>4. 복사용 출력</h2>
+
+      <div class="field" style="margin-top:16px;">
+        <label for="copyOutput">복사 내용</label>
+        <textarea id="copyOutput" placeholder="예: 1. KJ932 / 932 / 624"></textarea>
+      </div>
+
+      <div class="button-row">
+        <button id="copyBtn" class="success" type="button">복사</button>
+        <button id="csvBtn" class="warn" type="button">CSV 다운로드</button>
+      </div>
+    </section>
+
+    <details class="card">
+      <summary>5. OCR 원문 디버그</summary>
+
+      <div style="margin-top:16px;">
+        <div class="field">
+          <label for="ocrRawOutput">OCR 전체 디버그</label>
+          <textarea id="ocrRawOutput"></textarea>
+        </div>
+
+        <div class="field" style="margin-top:16px;">
+          <label for="ocrLinesOutput">행별 파싱 디버그</label>
+          <textarea id="ocrLinesOutput"></textarea>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
