@@ -58,8 +58,8 @@ const FIXED_COLUMN_HINTS = {
 };
 
 const ROW_MATCH_TOLERANCE = 18;
-const NAME_SLOT_MAX_TOLERANCE = 14;
-const NAME_ORDINAL_WEIGHT = 8;
+const NAME_SLOT_MAX_TOLERANCE = 24;
+const NAME_ORDINAL_WEIGHT = 3;
 const INF = 1e9;
 
 function setStatus(text) {
@@ -202,6 +202,9 @@ function extractFlightNoFromText(text, removeLeadingZero = true) {
 
   let m = upper.match(/\bKJ[\s\-_:|./,]*\d{3,4}\b/);
   if (m) return normalizeFlightNo(m[0], removeLeadingZero);
+
+  m = upper.match(/\bKJO[\s\-_:|./,]*\d{3,4}\b/);
+  if (m) return normalizeFlightNo(String(m[0]).replace(/^KJO/, "KJ0"), removeLeadingZero);
 
   m = upper.match(/\bK[JIOQL1|/][\s\-_:|./,]*\d{3,4}\b/);
   if (m) return normalizeFlightNo(m[0], removeLeadingZero);
@@ -920,7 +923,15 @@ function buildValidNameCandidates(nameRowsY) {
   return nameRowsY
     .map((row) => {
       const parsed = parseNameLine(row.text);
-      const name = KNOWN_NAMES.includes(parsed.name) ? parsed.name : "";
+      let name = KNOWN_NAMES.includes(parsed.name) ? parsed.name : "";
+
+      if (!name) {
+        const normalized = normalizeKnownName(row.text);
+        if (KNOWN_NAMES.includes(normalized)) {
+          name = normalized;
+        }
+      }
+
       return {
         y: row.y,
         text: row.text,
@@ -928,7 +939,7 @@ function buildValidNameCandidates(nameRowsY) {
         name
       };
     })
-    .filter((row) => row.name)
+    .filter((row) => row.name || /[가-힣]/.test(row.text))
     .sort((a, b) => a.y - b.y);
 }
 
@@ -1080,9 +1091,64 @@ function buildMergedRowsBySlots(flightRowsY, standRowsY, nameRowsY) {
   const slots = buildSlots(flightRowsY, standRowsY);
   const nameCandidates = buildValidNameCandidates(nameRowsY);
   const assigned = assignNamesToSlotsConservatively(slots, nameCandidates);
+
+  const assignedCount = assigned.slots.filter((s) => s.name).length;
+
+  if (assignedCount > 0) {
+    return {
+      mergedRows: assigned.slots,
+      nameAssignmentDebug: assigned.assignmentDebug
+    };
+  }
+
+  const fallbackSlots = slots.map((s) => ({ ...s }));
+  const tol = Math.max(18, getNameSlotTolerance(fallbackSlots) + 6);
+  let startIdx = 0;
+  const fallbackDebug = [];
+
+  for (let i = 0; i < nameCandidates.length; i++) {
+    const cand = nameCandidates[i];
+    let bestIdx = -1;
+    let bestDist = Infinity;
+
+    for (let j = startIdx; j < fallbackSlots.length; j++) {
+      const slot = fallbackSlots[j];
+      const dist = Math.abs(slot.y - cand.y);
+      if (dist <= tol && dist < bestDist) {
+        bestIdx = j;
+        bestDist = dist;
+      }
+    }
+
+    if (bestIdx < 0) continue;
+
+    const normalized = cand.name || normalizeKnownName(cand.text);
+    if (!KNOWN_NAMES.includes(normalized)) continue;
+
+    fallbackSlots[bestIdx].name = normalized;
+    fallbackSlots[bestIdx].nameRaw = cand.parsed.raw || cand.text || "";
+    fallbackSlots[bestIdx].raw = [
+      fallbackSlots[bestIdx].flightRaw,
+      fallbackSlots[bestIdx].standRaw,
+      fallbackSlots[bestIdx].nameRaw
+    ].filter(Boolean).join(" | ");
+
+    fallbackDebug.push({
+      mode: "fallback",
+      slotIndex: bestIdx,
+      slotY: fallbackSlots[bestIdx].y,
+      nameY: cand.y,
+      dist: bestDist,
+      nameRaw: fallbackSlots[bestIdx].nameRaw,
+      finalName: fallbackSlots[bestIdx].name
+    });
+
+    startIdx = bestIdx + 1;
+  }
+
   return {
-    mergedRows: assigned.slots,
-    nameAssignmentDebug: assigned.assignmentDebug
+    mergedRows: fallbackSlots,
+    nameAssignmentDebug: fallbackDebug
   };
 }
 
