@@ -35,14 +35,23 @@ const VALID_STANDS = [
   "672", "673", "674L", "674R"
 ];
 
-const KNOWN_NAMES = ["이영식", "박종규", "김우석", "윤기선", "최용준"];
+const KNOWN_NAMES = [
+  "박종규",
+  "강정형",
+  "정찬호",
+  "이영식",
+  "김우석",
+  "윤기선",
+  "최용준"
+];
 
-const CROP = {
-  table:  { x1: 0.035, y1: 0.035, x2: 0.982, y2: 0.992 },
-  flight: { x1: 0.000, y1: 0.045, x2: 0.125, y2: 0.995 },
-  name:   { x1: 0.640, y1: 0.045, x2: 0.730, y2: 0.995 },
-  stand:  { x1: 0.932, y1: 0.045, x2: 0.975, y2: 0.995 }
-};
+/*
+  표 전체 대략 영역
+  - 이후 헤더 OCR로 편명/주기장/R/O L/D 열 위치를 동적으로 찾음
+*/
+const TABLE_RATIO = { x1: 0.03, y1: 0.02, x2: 0.97, y2: 0.94 };
+const HEADER_SCAN_RATIO = { x1: 0.00, y1: 0.00, x2: 1.00, y2: 0.10 };
+const BODY_SCAN_RATIO   = { x1: 0.00, y1: 0.08, x2: 1.00, y2: 0.78 };
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text;
@@ -90,6 +99,7 @@ function getSearchKeyword() {
 function normalizeText(v) {
   return String(v || "")
     .replace(/\u00A0/g, " ")
+    .replace(/[|]/g, "I")
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
     .replace(/[，]/g, ",")
@@ -99,6 +109,14 @@ function normalizeText(v) {
 
 function compactText(v) {
   return String(v || "").replace(/\s+/g, "");
+}
+
+function normalizeHeaderText(v) {
+  return compactText(v)
+    .toUpperCase()
+    .replace(/0/g, "O")
+    .replace(/1/g, "I")
+    .replace(/5/g, "S");
 }
 
 function normalizeStand(v) {
@@ -123,13 +141,8 @@ function normalizeStand(v) {
 function extractStandFromText(text) {
   if (!text) return "";
   const upper = String(text).toUpperCase().replace(/\s+/g, "");
-  const match =
-    upper.match(/(621|622|623|624|625|626|627|672|673|674L|674R|674I|6741|6748|674B|\b674\b)/);
-
-  if (!match) return "";
-  const found = match[1];
-  if (found === "674") return "";
-  return normalizeStand(found);
+  const match = upper.match(/(621|622|623|624|625|626|627|672|673|674L|674R|674I|6741|6748|674B)/);
+  return match ? normalizeStand(match[1]) : "";
 }
 
 function normalizeFlightNo(v, removeLeadingZero = true) {
@@ -174,6 +187,10 @@ function extractFlightNoFromText(text, removeLeadingZero = true) {
   return "";
 }
 
+function stripNamePrefix(v) {
+  return String(v || "").replace(/^\s*[ABC]\s*/i, "").trim();
+}
+
 function normalizeKnownName(v) {
   if (!v) return "";
 
@@ -181,20 +198,36 @@ function normalizeKnownName(v) {
 
   s = s
     .replace(/^[ABC]\s*/i, "")
-    .replace(/^[ㄱㄴㄷ]\s*/i, "")
     .replace(/^0\s*/, "")
     .replace(/^O\s*/, "")
     .replace(/[^A-Z가-힣0-9]/gi, "");
 
   const nameMap = {
+    "박종규": "박종규",
     "박종구": "박종규",
     "박종큐": "박종규",
     "박종7": "박종규",
     "박종9": "박종규",
+
+    "강정형": "강정형",
+    "강정영": "강정형",
+    "강정헝": "강정형",
+
+    "정찬호": "정찬호",
+    "정찬후": "정찬호",
+    "정찬흐": "정찬호",
+
+    "이영식": "이영식",
     "이영삭": "이영식",
     "이영직": "이영식",
+
+    "김우석": "김우석",
     "김우서": "김우석",
+
+    "윤기선": "윤기선",
     "윤기션": "윤기선",
+
+    "최용준": "최용준",
     "최용순": "최용준",
     "최용춘": "최용준"
   };
@@ -225,7 +258,7 @@ async function fileToImage(file) {
 }
 
 function preprocessFullImage(img) {
-  const scale = 2.3;
+  const scale = 2.2;
   const canvas = createCanvas(
     Math.floor(img.width * scale),
     Math.floor(img.height * scale)
@@ -248,17 +281,20 @@ function preprocessColumn(canvas, type) {
     let v = gray;
 
     if (type === "flight") {
-      if (gray > 212) v = 255;
-      else if (gray < 158) v = 0;
-      else v = 88;
-    } else if (type === "name") {
-      if (gray > 218) v = 255;
-      else if (gray < 138) v = 0;
-      else v = 152;
+      if (gray > 215) v = 255;
+      else if (gray < 150) v = 0;
+      else v = 85;
     } else if (type === "stand") {
-      if (gray > 208) v = 255;
-      else if (gray < 152) v = 0;
-      else v = 68;
+      if (gray > 212) v = 255;
+      else if (gray < 150) v = 0;
+      else v = 70;
+    } else if (type === "name") {
+      if (gray > 220) v = 255;
+      else if (gray < 135) v = 0;
+      else v = 155;
+    } else {
+      if (gray > 220) v = 255;
+      else if (gray < 145) v = 0;
     }
 
     data[i] = v;
@@ -282,6 +318,13 @@ function cropCanvasByRatio(sourceCanvas, ratio) {
   return out;
 }
 
+function cropCanvasByPx(sourceCanvas, sx, sy, sw, sh) {
+  const out = createCanvas(sw, sh);
+  const ctx = out.getContext("2d");
+  ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  return out;
+}
+
 function ensureDebugPreviewSection() {
   let wrap = document.getElementById("debugCropSection");
   if (wrap) return wrap;
@@ -297,22 +340,21 @@ function ensureDebugPreviewSection() {
         <div id="debugBoxTable" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
       </div>
       <div>
-        <div style="font-weight:700; margin-bottom:8px;">flight crop</div>
-        <div id="debugBoxFlight" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
+        <div style="font-weight:700; margin-bottom:8px;">header crop</div>
+        <div id="debugBoxHeader" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
       </div>
       <div>
-        <div style="font-weight:700; margin-bottom:8px;">name crop</div>
-        <div id="debugBoxName" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
+        <div style="font-weight:700; margin-bottom:8px;">flight crop</div>
+        <div id="debugBoxFlight" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
       </div>
       <div>
         <div style="font-weight:700; margin-bottom:8px;">stand crop</div>
         <div id="debugBoxStand" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
       </div>
-    </div>
-    <div style="margin-top:12px; color:#64748b; font-size:13px; line-height:1.6;">
-      각 미리보기를 보고 이름/주기장 칸이 정확히 잘렸는지 확인하세요.
-      이름 칸에 다른 열 글자가 섞여 보이면 <code>CROP.name</code> 좌표를 줄이고,
-      주기장 칸에 표 전체가 보이면 <code>CROP.stand</code> 좌표를 더 오른쪽으로 좁히면 됩니다.
+      <div>
+        <div style="font-weight:700; margin-bottom:8px;">name crop (R/O L/D)</div>
+        <div id="debugBoxName" style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:#fff; overflow:auto;"></div>
+      </div>
     </div>
   `;
 
@@ -351,12 +393,13 @@ function renderDebugCanvas(boxId, canvas, labelText = "") {
   box.appendChild(cloneCanvasForDisplay(canvas));
 }
 
-function renderCropDebugPreviews(tableCanvas, flightCanvas, nameCanvas, standCanvas) {
+function renderCropDebugPreviews({ tableCanvas, headerCanvas, flightCanvas, standCanvas, nameCanvas }) {
   ensureDebugPreviewSection();
   renderDebugCanvas("debugBoxTable", tableCanvas, "table");
+  renderDebugCanvas("debugBoxHeader", headerCanvas, "header");
   renderDebugCanvas("debugBoxFlight", flightCanvas, "flight");
-  renderDebugCanvas("debugBoxName", nameCanvas, "name");
   renderDebugCanvas("debugBoxStand", standCanvas, "stand");
+  renderDebugCanvas("debugBoxName", nameCanvas, "name");
 }
 
 async function recognizeCanvasDetailed(canvas, lang, type) {
@@ -368,9 +411,11 @@ async function recognizeCanvasDetailed(canvas, lang, type) {
     options.tessedit_pageseg_mode = 6;
     options.tessedit_char_whitelist = "KJ0123456789";
   } else if (type === "stand") {
-    options.tessedit_pageseg_mode = 11;
+    options.tessedit_pageseg_mode = 6;
     options.tessedit_char_whitelist = "0123456789LR";
   } else if (type === "name") {
+    options.tessedit_pageseg_mode = 6;
+  } else if (type === "header") {
     options.tessedit_pageseg_mode = 6;
   }
 
@@ -419,9 +464,7 @@ function groupWordsIntoRows(words, tolerance = 18) {
 
   return rows
     .map((row) => {
-      const sortedWords = [...row.words].sort(
-        (a, b) => (a.bbox?.x0 ?? 0) - (b.bbox?.x0 ?? 0)
-      );
+      const sortedWords = [...row.words].sort((a, b) => (a.bbox?.x0 ?? 0) - (b.bbox?.x0 ?? 0));
       const text = sortedWords.map((w) => normalizeText(w.text)).join(" ").trim();
       return { y: row.avgY, text };
     })
@@ -483,18 +526,14 @@ function cleanNameRows(rows) {
     .filter((text) => {
       const c = compactText(text);
       if (!c) return false;
-      if (/RO|LD|R\/O|L\/D/i.test(c)) return false;
-      return /[A-Z가-힣\-]/i.test(c);
+      if (c === "-") return true;
+      return /[ABC가-힣]/i.test(c);
     });
 }
 
 function pickBetterNameRows(nameResult) {
-  const fromLines = cleanNameRows(
-    mergeNearRows(linesFromTesseract(nameResult), 10)
-  );
-  const fromWords = cleanNameRows(
-    groupWordsIntoRows(nameResult?.data?.words || [], 16)
-  );
+  const fromLines = cleanNameRows(mergeNearRows(linesFromTesseract(nameResult), 10));
+  const fromWords = cleanNameRows(groupWordsIntoRows(nameResult?.data?.words || [], 16));
 
   const score = (arr) => {
     let s = 0;
@@ -504,7 +543,7 @@ function pickBetterNameRows(nameResult) {
       if (/^[ABC][가-힣]{2,4}$/.test(c)) s += 8;
       if (KNOWN_NAMES.some((name) => c.includes(name))) s += 10;
       if (/[가-힣]/.test(c)) s += 2;
-      if (/[@#$%^&*_=+]/.test(c)) s -= 3;
+      if (/[@#$%^&*_=+]/.test(c)) s -= 4;
     }
     return s;
   };
@@ -518,6 +557,10 @@ function parseNameLine(rawLine) {
 
   if (!line) {
     return { label: "", name: "", raw: "" };
+  }
+
+  if (compact === "-" || compact === "—" || compact === "_") {
+    return { label: "-", name: "", raw: line };
   }
 
   const full = compact.match(/^([ABC])([가-힣]{2,4})$/i);
@@ -548,10 +591,6 @@ function parseNameLine(rawLine) {
     };
   }
 
-  if (compact === "-" || compact === "—" || compact === "_") {
-    return { label: "-", name: "", raw: line };
-  }
-
   return {
     label: "",
     name: normalizeKnownName(compact),
@@ -563,7 +602,7 @@ function buildNameMap(parsedNameRows) {
   const map = {};
 
   for (const row of parsedNameRows) {
-    if (row.label && row.name && KNOWN_NAMES.includes(row.name)) {
+    if (row.label && row.name) {
       map[row.label] = row.name;
     }
   }
@@ -573,7 +612,7 @@ function buildNameMap(parsedNameRows) {
 
 function resolveNameRows(parsedNameRows, nameMap) {
   return parsedNameRows.map((row) => {
-    if (row.name && KNOWN_NAMES.includes(row.name)) return row;
+    if (row.name) return row;
     if (row.label && nameMap[row.label]) {
       return {
         ...row,
@@ -591,8 +630,8 @@ function mergeRows(flightRows, nameRows, standRows) {
 
   for (let i = 0; i < rowCount; i++) {
     const flightRaw = flightRows[i] || "";
-    const nameObj = nameRows[i] || { label: "", name: "", raw: "" };
     const standRaw = standRows[i] || "";
+    const nameObj = nameRows[i] || { label: "", name: "", raw: "" };
 
     out.push({
       flightNo: extractFlightNoFromText(flightRaw, removeLeadingZero),
@@ -601,7 +640,7 @@ function mergeRows(flightRows, nameRows, standRows) {
       nameRaw: nameObj.raw || "",
       flightRaw,
       standRaw,
-      raw: [flightRaw, nameObj.raw, standRaw].filter(Boolean).join(" | ")
+      raw: [flightRaw, standRaw, nameObj.raw].filter(Boolean).join(" | ")
     });
   }
 
@@ -633,8 +672,13 @@ function isSearchMatched(row) {
   }
 
   const q = normalizeKnownName(keyword);
-  return compactText(row.name).includes(compactText(q)) ||
-         compactText(row.nameRaw).includes(compactText(keyword));
+  const rawWithoutPrefix = stripNamePrefix(row.nameRaw || "");
+
+  return (
+    compactText(row.name).includes(compactText(q)) ||
+    compactText(normalizeKnownName(rawWithoutPrefix)).includes(compactText(q)) ||
+    compactText(row.nameRaw).includes(compactText(keyword))
+  );
 }
 
 function renderTable(rows, columns) {
@@ -704,30 +748,212 @@ function downloadCSV(rows, columns) {
   URL.revokeObjectURL(url);
 }
 
+function getHeaderType(text) {
+  const s = normalizeHeaderText(text);
+  if (!s) return "";
+
+  if (s.includes("편명")) return "flight";
+  if (s.includes("주기장")) return "stand";
+
+  if (
+    s.includes("ROLD") ||
+    s.includes("R/OLD") ||
+    (s.includes("R/O") && s.includes("L/D")) ||
+    (s.includes("RO") && s.includes("LD"))
+  ) {
+    return "name";
+  }
+
+  return "";
+}
+
+function detectHeadersFromHeaderResult(headerResult, headerCanvasWidth) {
+  const words = headerResult?.data?.words || [];
+  const rows = [];
+
+  for (const w of sortWords(words)) {
+    const text = normalizeText(w.text || "");
+    if (!text) continue;
+
+    const y = w.bbox?.y0 ?? 0;
+    let found = null;
+
+    for (const row of rows) {
+      if (Math.abs(row.avgY - y) <= 24) {
+        found = row;
+        break;
+      }
+    }
+
+    if (!found) {
+      found = { words: [], avgY: y };
+      rows.push(found);
+    }
+
+    found.words.push(w);
+    found.avgY =
+      found.words.reduce((sum, item) => sum + (item.bbox?.y0 ?? 0), 0) / found.words.length;
+  }
+
+  const candidateRows = rows
+    .map((row) => ({
+      y: row.avgY,
+      words: [...row.words].sort((a, b) => (a.bbox?.x0 ?? 0) - (b.bbox?.x0 ?? 0))
+    }))
+    .sort((a, b) => a.y - b.y);
+
+  const headerRow = candidateRows[0] || { words: [] };
+  const detected = [];
+
+  for (let i = 0; i < headerRow.words.length; i++) {
+    const w1 = headerRow.words[i];
+    const t1 = normalizeText(w1.text || "");
+    const one = getHeaderType(t1);
+    if (one) {
+      detected.push({
+        type: one,
+        x0: w1.bbox?.x0 ?? 0,
+        x1: w1.bbox?.x1 ?? 0,
+        text: t1
+      });
+      continue;
+    }
+
+    if (i < headerRow.words.length - 1) {
+      const w2 = headerRow.words[i + 1];
+      const joined = `${normalizeText(w1.text || "")} ${normalizeText(w2.text || "")}`;
+      const two = getHeaderType(joined);
+      if (two) {
+        detected.push({
+          type: two,
+          x0: Math.min(w1.bbox?.x0 ?? 0, w2.bbox?.x0 ?? 0),
+          x1: Math.max(w1.bbox?.x1 ?? 0, w2.bbox?.x1 ?? 0),
+          text: joined
+        });
+      }
+    }
+  }
+
+  const byType = {};
+  for (const d of detected) {
+    if (!byType[d.type]) byType[d.type] = d;
+  }
+
+  const output = ["flight", "stand", "name"]
+    .map((type) => byType[type])
+    .filter(Boolean)
+    .sort((a, b) => a.x0 - b.x0);
+
+  const fallback = {
+    flight: { x0: Math.floor(headerCanvasWidth * 0.00), x1: Math.floor(headerCanvasWidth * 0.13), text: "fallback-flight", type: "flight" },
+    stand:  { x0: Math.floor(headerCanvasWidth * 0.13), x1: Math.floor(headerCanvasWidth * 0.24), text: "fallback-stand", type: "stand"  },
+    name:   { x0: Math.floor(headerCanvasWidth * 0.70), x1: Math.floor(headerCanvasWidth * 0.86), text: "fallback-name", type: "name"   }
+  };
+
+  return {
+    flight: byType.flight || fallback.flight,
+    stand: byType.stand || fallback.stand,
+    name: byType.name || fallback.name,
+    debugList: output.length ? output : Object.values(fallback)
+  };
+}
+
+function buildColumnRangeMap(detected, totalWidth) {
+  const cols = [
+    { type: "flight", ...detected.flight },
+    { type: "stand",  ...detected.stand  },
+    { type: "name",   ...detected.name   }
+  ].sort((a, b) => a.x0 - b.x0);
+
+  const ranges = {};
+
+  for (let i = 0; i < cols.length; i++) {
+    const col = cols[i];
+    const prev = cols[i - 1];
+    const next = cols[i + 1];
+
+    let left = Math.max(0, col.x0 - 12);
+    let right = Math.min(totalWidth, col.x1 + 12);
+
+    if (prev) left = Math.max(left, Math.floor((prev.x1 + col.x0) / 2));
+    if (next) right = Math.min(right, Math.floor((col.x1 + next.x0) / 2));
+
+    if (right <= left + 10) {
+      left = Math.max(0, col.x0 - 15);
+      right = Math.min(totalWidth, col.x1 + 15);
+    }
+
+    ranges[col.type] = { x0: left, x1: right };
+  }
+
+  return ranges;
+}
+
 async function extractRowsBySeparatedColumns(file) {
   const img = await fileToImage(file);
   const processed = preprocessFullImage(img);
 
-  const tableCanvas = cropCanvasByRatio(processed, CROP.table);
+  const tableCanvas = cropCanvasByRatio(processed, TABLE_RATIO);
+  const headerCanvas = cropCanvasByRatio(tableCanvas, HEADER_SCAN_RATIO);
 
-  const flightCanvasRaw = cropCanvasByRatio(tableCanvas, CROP.flight);
-  const nameCanvasRaw = cropCanvasByRatio(tableCanvas, CROP.name);
-  const standCanvasRaw = cropCanvasByRatio(tableCanvas, CROP.stand);
+  setStatus("헤더 분석 중...");
+  const headerForOCR = preprocessColumn(headerCanvas, "header");
+  const headerResult = await recognizeCanvasDetailed(headerForOCR, "kor+eng", "header");
+
+  const headerDetected = detectHeadersFromHeaderResult(headerResult, headerCanvas.width);
+  const columnRanges = buildColumnRangeMap(headerDetected, tableCanvas.width);
+
+  const bodyYOffset = Math.floor(tableCanvas.height * BODY_SCAN_RATIO.y1);
+  const bodyHeight = Math.max(1, Math.floor(tableCanvas.height * (BODY_SCAN_RATIO.y2 - BODY_SCAN_RATIO.y1)));
+
+  const flightRange = columnRanges.flight;
+  const standRange = columnRanges.stand;
+  const nameRange = columnRanges.name;
+
+  const flightCanvasRaw = cropCanvasByPx(
+    tableCanvas,
+    flightRange.x0,
+    bodyYOffset,
+    Math.max(1, flightRange.x1 - flightRange.x0),
+    bodyHeight
+  );
+
+  const standCanvasRaw = cropCanvasByPx(
+    tableCanvas,
+    standRange.x0,
+    bodyYOffset,
+    Math.max(1, standRange.x1 - standRange.x0),
+    bodyHeight
+  );
+
+  const nameCanvasRaw = cropCanvasByPx(
+    tableCanvas,
+    nameRange.x0,
+    bodyYOffset,
+    Math.max(1, nameRange.x1 - nameRange.x0),
+    bodyHeight
+  );
 
   const flightCanvas = preprocessColumn(flightCanvasRaw, "flight");
-  const nameCanvas = preprocessColumn(nameCanvasRaw, "name");
   const standCanvas = preprocessColumn(standCanvasRaw, "stand");
+  const nameCanvas = preprocessColumn(nameCanvasRaw, "name");
 
-  renderCropDebugPreviews(tableCanvas, flightCanvas, nameCanvas, standCanvas);
+  renderCropDebugPreviews({
+    tableCanvas,
+    headerCanvas,
+    flightCanvas,
+    standCanvas,
+    nameCanvas
+  });
 
   setStatus("편명 열 OCR 중...");
   const flightResult = await recognizeCanvasDetailed(flightCanvas, "eng", "flight");
 
-  setStatus("이름 열 OCR 중...");
-  const nameResult = await recognizeCanvasDetailed(nameCanvas, "kor+eng", "name");
-
   setStatus("주기장 열 OCR 중...");
   const standResult = await recognizeCanvasDetailed(standCanvas, "eng", "stand");
+
+  setStatus("이름 열 OCR 중...");
+  const nameResult = await recognizeCanvasDetailed(nameCanvas, "kor+eng", "name");
 
   const flightRowsRaw = mergeNearRows(linesFromTesseract(flightResult), 10);
   const standRowsRaw = mergeNearRows(linesFromTesseract(standResult), 10);
@@ -736,11 +962,11 @@ async function extractRowsBySeparatedColumns(file) {
     flightRowsRaw.length ? flightRowsRaw : groupWordsIntoRows(flightResult?.data?.words || [], 16)
   );
 
-  const nameRowsText = pickBetterNameRows(nameResult);
-
   const standRows = cleanStandRows(
     standRowsRaw.length ? standRowsRaw : groupWordsIntoRows(standResult?.data?.words || [], 16)
   );
+
+  const nameRowsText = pickBetterNameRows(nameResult);
 
   const parsedNameRows = nameRowsText.map(parseNameLine);
   const nameMap = buildNameMap(parsedNameRows);
@@ -748,30 +974,29 @@ async function extractRowsBySeparatedColumns(file) {
 
   const mergedRows = mergeRows(flightRows, resolvedNameRows, standRows);
   const rows = dedupeRows(
-    mergedRows.filter((row) => row.flightNo && row.stand).filter(isSearchMatched)
+    mergedRows
+      .filter((row) => row.flightNo && row.stand)
+      .filter(isSearchMatched)
   );
 
   const debugText = [
-    "[CROP.table]",
-    JSON.stringify(CROP.table),
+    "[HEADER OCR TEXT]",
+    headerResult?.data?.text || "",
     "",
-    "[CROP.flight]",
-    JSON.stringify(CROP.flight),
+    "[HEADER DETECTED]",
+    JSON.stringify(headerDetected.debugList, null, 2),
     "",
-    "[CROP.name]",
-    JSON.stringify(CROP.name),
-    "",
-    "[CROP.stand]",
-    JSON.stringify(CROP.stand),
+    "[COLUMN RANGES]",
+    JSON.stringify(columnRanges, null, 2),
     "",
     "[편명 열 TEXT]",
     flightResult?.data?.text || "",
     "",
-    "[이름 열 TEXT]",
-    nameResult?.data?.text || "",
-    "",
     "[주기장 열 TEXT]",
     standResult?.data?.text || "",
+    "",
+    "[이름 열 TEXT]",
+    nameResult?.data?.text || "",
     "",
     "[이름 코드 매핑]",
     JSON.stringify(nameMap, null, 2)
@@ -782,11 +1007,11 @@ async function extractRowsBySeparatedColumns(file) {
       return [
         `${idx + 1}.`,
         `flightRaw=${row.flightRaw || "-"}`,
-        `nameRaw=${row.nameRaw || "-"}`,
         `standRaw=${row.standRaw || "-"}`,
+        `nameRaw=${row.nameRaw || "-"}`,
         `=> flight=${row.flightNo || "-"}`,
-        `name=${row.name || "-"}`,
-        `stand=${row.stand || "-"}`
+        `stand=${row.stand || "-"}`,
+        `name=${row.name || "-"}`
       ].join(" | ");
     })
     .join("\n\n");
