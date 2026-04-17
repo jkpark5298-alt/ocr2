@@ -57,6 +57,8 @@ const FIXED_COLUMN_HINTS = {
   name:   { x0r: 0.71, x1r: 0.86 }
 };
 
+const ROW_MATCH_TOLERANCE = 18;
+
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text;
 }
@@ -210,7 +212,7 @@ function extractFlightNoFromText(text, removeLeadingZero = true) {
 function stripNamePrefix(v) {
   return String(v || "")
     .replace(/^[>\-_=+~*.,:;!?()$$$$$${}\\/]+/, "")
-    .replace(/^[ABC8]\s*/i, "")
+    .replace(/^[ABC856쓰]\s*/i, "")
     .trim();
 }
 
@@ -220,7 +222,7 @@ function normalizeKnownName(v) {
 
   s = s
     .replace(/^[>\-_=+~*.,:;!?()$$$$$${}\\/]+/g, "")
-    .replace(/^[ABC8]\s*/i, "")
+    .replace(/^[ABC856쓰]\s*/i, "")
     .replace(/^0\s*/, "")
     .replace(/^O\s*/, "")
     .replace(/[^A-Z가-힣0-9]/gi, "");
@@ -500,41 +502,47 @@ function mergeNearRows(rows, tolerance = 12) {
   return out;
 }
 
-function cleanFlightRows(rows) {
-  return rows.map((r) => r.text).filter((text) => {
-    const c = compactText(text).toUpperCase();
-    if (!c || c.includes("편명")) return false;
-    return /K/.test(c) && /\d/.test(c);
-  });
+function cleanFlightRowsWithY(rows) {
+  return rows
+    .filter((r) => {
+      const c = compactText(r.text).toUpperCase();
+      if (!c || c.includes("편명")) return false;
+      return /K/.test(c) && /\d/.test(c);
+    })
+    .map((r) => ({ y: r.y, text: r.text }));
 }
 
-function cleanStandRows(rows) {
-  return rows.map((r) => r.text).filter((text) => {
-    const c = compactText(text).toUpperCase();
-    if (!c || c.includes("주기장")) return false;
-    return /(621|622|623|624|625|626|627|672|673|674)/.test(c);
-  });
+function cleanStandRowsWithY(rows) {
+  return rows
+    .filter((r) => {
+      const c = compactText(r.text).toUpperCase();
+      if (!c || c.includes("주기장")) return false;
+      return /(621|622|623|624|625|626|627|672|673|674)/.test(c);
+    })
+    .map((r) => ({ y: r.y, text: r.text }));
 }
 
-function cleanNameRows(rows) {
-  return rows.map((r) => r.text).filter((text) => {
-    const c = compactText(text);
-    if (!c) return false;
-    if (c === "-") return true;
-    return /[ABC8가-힣]/i.test(c);
-  });
+function cleanNameRowsWithY(rows) {
+  return rows
+    .filter((r) => {
+      const c = compactText(r.text);
+      if (!c) return false;
+      if (c === "-") return true;
+      return /[ABC856쓰가-힣]/i.test(c);
+    })
+    .map((r) => ({ y: r.y, text: r.text }));
 }
 
-function pickBetterNameRows(nameResult) {
-  const fromLines = cleanNameRows(mergeNearRows(linesFromTesseract(nameResult), 10));
-  const fromWords = cleanNameRows(groupWordsIntoRows(nameResult?.data?.words || [], 16));
+function pickBetterNameRowsWithY(nameResult) {
+  const fromLines = cleanNameRowsWithY(mergeNearRows(linesFromTesseract(nameResult), 10));
+  const fromWords = cleanNameRowsWithY(groupWordsIntoRows(nameResult?.data?.words || [], 16));
 
   const score = (arr) => {
     let s = 0;
-    for (const line of arr) {
-      const c = compactText(line);
-      if (/^[ABC8]$/.test(c)) s += 3;
-      if (/^[ABC8][가-힣]{2,4}$/.test(c)) s += 8;
+    for (const row of arr) {
+      const c = compactText(row.text);
+      if (/^[ABC856]$/.test(c)) s += 3;
+      if (/^[ABC856][가-힣]{2,4}$/.test(c)) s += 8;
       if (KNOWN_NAMES.some((name) => c.includes(name))) s += 10;
       if (/[가-힣]/.test(c)) s += 2;
       if (/[@#$%^&*_=+]/.test(c)) s -= 4;
@@ -565,7 +573,9 @@ function parseNameLine(rawLine) {
 
   const cleanedCompact = compact
     .replace(/^[>\-_=+~*.,:;!?]+/, "")
-    .replace(/^8/, "B");
+    .replace(/^8/, "B")
+    .replace(/^6/, "C")
+    .replace(/^쓰/, "A");
 
   const full = cleanedCompact.match(/^([ABC])([가-힣]{2,4})$/i);
   if (full) {
@@ -579,7 +589,6 @@ function parseNameLine(rawLine) {
   const loose = cleanedCompact.match(/^([ABC])(.+)$/i);
   if (loose) {
     const normalized = normalizeKnownName(loose[2]);
-
     if (!KNOWN_NAMES.includes(normalized)) {
       return {
         label: loose[1].toUpperCase(),
@@ -587,7 +596,6 @@ function parseNameLine(rawLine) {
         raw: line
       };
     }
-
     return {
       label: loose[1].toUpperCase(),
       name: normalized,
@@ -596,7 +604,6 @@ function parseNameLine(rawLine) {
   }
 
   const normalized = normalizeKnownName(cleanedCompact);
-
   if (!KNOWN_NAMES.includes(normalized)) {
     return {
       label: "",
@@ -610,93 +617,6 @@ function parseNameLine(rawLine) {
     name: normalized,
     raw: line
   };
-}
-
-function buildNameMap(parsedNameRows) {
-  const map = {};
-  for (const row of parsedNameRows) {
-    if (row.label && row.name && KNOWN_NAMES.includes(row.name)) {
-      map[row.label] = row.name;
-    }
-  }
-  return map;
-}
-
-function resolveNameRows(parsedNameRows, nameMap) {
-  return parsedNameRows.map((row) => {
-    if (row.name && KNOWN_NAMES.includes(row.name)) {
-      return row;
-    }
-
-    if (!row.name) {
-      return {
-        ...row,
-        name: ""
-      };
-    }
-
-    return row;
-  });
-}
-
-function mergeRows(flightRows, nameRows, standRows) {
-  const rowCount = Math.max(flightRows.length, nameRows.length, standRows.length);
-  const out = [];
-  const removeLeadingZero = !!removeZeroEl?.checked;
-
-  for (let i = 0; i < rowCount; i++) {
-    const flightRaw = flightRows[i] || "";
-    const standRaw = standRows[i] || "";
-    const nameObj = nameRows[i] || { label: "", name: "", raw: "" };
-
-    const finalName = KNOWN_NAMES.includes(nameObj.name) ? nameObj.name : "";
-
-    out.push({
-      flightNo: extractFlightNoFromText(flightRaw, removeLeadingZero),
-      stand: extractStandFromText(standRaw),
-      name: finalName,
-      nameRaw: nameObj.raw || "",
-      flightRaw,
-      standRaw,
-      raw: [flightRaw, standRaw, nameObj.raw].filter(Boolean).join(" | ")
-    });
-  }
-
-  return out;
-}
-
-function dedupeRows(rows) {
-  const seen = new Set();
-  const out = [];
-
-  for (const row of rows) {
-    const key = [row.flightNo || "", row.name || "", row.stand || ""].join("|");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(row);
-  }
-
-  return out;
-}
-
-function isSearchMatched(row) {
-  const keyword = getSearchKeyword();
-  const type = getSearchType();
-
-  if (!keyword) return true;
-
-  if (type === "raw") {
-    return compactText(row.raw).includes(compactText(keyword));
-  }
-
-  const q = normalizeKnownName(keyword);
-  const rawWithoutPrefix = stripNamePrefix(row.nameRaw || "");
-
-  return (
-    compactText(row.name).includes(compactText(q)) ||
-    compactText(normalizeKnownName(rawWithoutPrefix)).includes(compactText(q)) ||
-    compactText(row.nameRaw).includes(compactText(keyword))
-  );
 }
 
 function renderTable(rows, columns) {
@@ -923,16 +843,124 @@ function buildFixedColumnRangeMap(totalWidth) {
 }
 
 function hasEnoughStandRows(rows) {
-  const valid = rows.filter((r) => extractStandFromText(r));
-  return valid.length >= 3;
+  return rows.filter((r) => extractStandFromText(r.text)).length >= 3;
 }
 
 function hasEnoughNameRows(rows) {
-  const valid = rows.filter((r) => {
-    const p = parseNameLine(r);
+  return rows.filter((r) => {
+    const p = parseNameLine(r.text);
     return !!(p.name && KNOWN_NAMES.includes(p.name));
-  });
-  return valid.length >= 2;
+  }).length >= 2;
+}
+
+function rowsFromResultWithY(result, type) {
+  const lines = mergeNearRows(linesFromTesseract(result), 10);
+  const words = groupWordsIntoRows(result?.data?.words || [], 16);
+  let base = lines.length ? lines : words;
+
+  if (type === "flight") return cleanFlightRowsWithY(base);
+  if (type === "stand") return cleanStandRowsWithY(base);
+  if (type === "name") return pickBetterNameRowsWithY(result);
+  return [];
+}
+
+function chooseBestAnchorRows(flightRows, standRows) {
+  if (flightRows.length >= standRows.length) return flightRows;
+  return standRows;
+}
+
+function findNearestUnusedRow(targetY, candidates, usedSet, tolerance) {
+  let bestIdx = -1;
+  let bestDist = Infinity;
+
+  for (let i = 0; i < candidates.length; i++) {
+    if (usedSet.has(i)) continue;
+    const dist = Math.abs(candidates[i].y - targetY);
+    if (dist <= tolerance && dist < bestDist) {
+      bestIdx = i;
+      bestDist = dist;
+    }
+  }
+
+  if (bestIdx < 0) return null;
+  return { idx: bestIdx, row: candidates[bestIdx], dist: bestDist };
+}
+
+function buildMergedRowsByY(flightRowsY, standRowsY, nameRowsY) {
+  const anchors = chooseBestAnchorRows(flightRowsY, standRowsY)
+    .slice()
+    .sort((a, b) => a.y - b.y);
+
+  const usedFlight = new Set();
+  const usedStand = new Set();
+  const usedName = new Set();
+
+  const removeLeadingZero = !!removeZeroEl?.checked;
+  const merged = [];
+
+  for (const anchor of anchors) {
+    const flightMatch = findNearestUnusedRow(anchor.y, flightRowsY, usedFlight, ROW_MATCH_TOLERANCE);
+    const standMatch = findNearestUnusedRow(anchor.y, standRowsY, usedStand, ROW_MATCH_TOLERANCE);
+    const nameMatch = findNearestUnusedRow(anchor.y, nameRowsY, usedName, ROW_MATCH_TOLERANCE);
+
+    if (flightMatch) usedFlight.add(flightMatch.idx);
+    if (standMatch) usedStand.add(standMatch.idx);
+    if (nameMatch) usedName.add(nameMatch.idx);
+
+    const flightRaw = flightMatch?.row?.text || "";
+    const standRaw = standMatch?.row?.text || "";
+    const nameRaw = nameMatch?.row?.text || "";
+
+    const parsedName = parseNameLine(nameRaw);
+    const finalName = KNOWN_NAMES.includes(parsedName.name) ? parsedName.name : "";
+
+    merged.push({
+      y: anchor.y,
+      flightNo: extractFlightNoFromText(flightRaw, removeLeadingZero),
+      stand: extractStandFromText(standRaw),
+      name: finalName,
+      nameRaw: parsedName.raw || nameRaw || "",
+      flightRaw,
+      standRaw,
+      raw: [flightRaw, standRaw, parsedName.raw || nameRaw].filter(Boolean).join(" | ")
+    });
+  }
+
+  return merged;
+}
+
+function dedupeRows(rows) {
+  const seen = new Set();
+  const out = [];
+
+  for (const row of rows) {
+    const key = [row.flightNo || "", row.nameRaw || "", row.stand || "", Math.round(row.y || 0)].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+
+  return out;
+}
+
+function isSearchMatched(row) {
+  const keyword = getSearchKeyword();
+  const type = getSearchType();
+
+  if (!keyword) return true;
+
+  if (type === "raw") {
+    return compactText(row.raw).includes(compactText(keyword));
+  }
+
+  const q = normalizeKnownName(keyword);
+  const rawWithoutPrefix = stripNamePrefix(row.nameRaw || "");
+
+  return (
+    compactText(row.name).includes(compactText(q)) ||
+    compactText(normalizeKnownName(rawWithoutPrefix)).includes(compactText(q)) ||
+    compactText(row.nameRaw).includes(compactText(keyword))
+  );
 }
 
 async function extractUsingRanges(tableCanvas, headerCanvas, columnRanges, modeLabel) {
@@ -968,26 +996,17 @@ async function extractUsingRanges(tableCanvas, headerCanvas, columnRanges, modeL
   setStatus(`이름 열 OCR 중... (${modeLabel})`);
   const nameResult = await recognizeCanvasDetailed(nameCanvas, "kor+eng", "name");
 
-  const flightRowsRaw = mergeNearRows(linesFromTesseract(flightResult), 10);
-  const standRowsRaw = mergeNearRows(linesFromTesseract(standResult), 10);
-
-  const flightRows = cleanFlightRows(
-    flightRowsRaw.length ? flightRowsRaw : groupWordsIntoRows(flightResult?.data?.words || [], 16)
-  );
-
-  const standRows = cleanStandRows(
-    standRowsRaw.length ? standRowsRaw : groupWordsIntoRows(standResult?.data?.words || [], 16)
-  );
-
-  const nameRowsText = pickBetterNameRows(nameResult);
+  const flightRowsY = rowsFromResultWithY(flightResult, "flight");
+  const standRowsY = rowsFromResultWithY(standResult, "stand");
+  const nameRowsY = rowsFromResultWithY(nameResult, "name");
 
   return {
     flightResult,
     standResult,
     nameResult,
-    flightRows,
-    standRows,
-    nameRowsText
+    flightRowsY,
+    standRowsY,
+    nameRowsY
   };
 }
 
@@ -1010,19 +1029,18 @@ async function extractRowsBySeparatedColumns(file) {
   let usedRanges = autoColumnRanges;
   let pass = await extractUsingRanges(tableCanvas, headerCanvas, autoColumnRanges, "auto");
 
-  if (!hasEnoughStandRows(pass.standRows) || !hasEnoughNameRows(pass.nameRowsText)) {
+  if (!hasEnoughStandRows(pass.standRowsY) || !hasEnoughNameRows(pass.nameRowsY)) {
     usedMode = "fixed-fallback";
     usedRanges = fixedColumnRanges;
     pass = await extractUsingRanges(tableCanvas, headerCanvas, fixedColumnRanges, "fixed");
   }
 
-  const parsedNameRows = pass.nameRowsText.map(parseNameLine);
-  const nameMap = buildNameMap(parsedNameRows);
-  const resolvedNameRows = resolveNameRows(parsedNameRows, nameMap);
+  const mergedRows = buildMergedRowsByY(pass.flightRowsY, pass.standRowsY, pass.nameRowsY);
 
-  const mergedRows = mergeRows(pass.flightRows, resolvedNameRows, pass.standRows);
   const rows = dedupeRows(
-    mergedRows.filter((row) => row.flightNo && row.stand).filter(isSearchMatched)
+    mergedRows
+      .filter((row) => row.flightNo && row.stand)
+      .filter(isSearchMatched)
   );
 
   const debugText = [
@@ -1053,13 +1071,20 @@ async function extractRowsBySeparatedColumns(file) {
     "[이름 열 TEXT]",
     pass.nameResult?.data?.text || "",
     "",
-    "[이름 코드 매핑]",
-    JSON.stringify(nameMap, null, 2)
+    "[FLIGHT ROWS Y]",
+    JSON.stringify(pass.flightRowsY, null, 2),
+    "",
+    "[STAND ROWS Y]",
+    JSON.stringify(pass.standRowsY, null, 2),
+    "",
+    "[NAME ROWS Y]",
+    JSON.stringify(pass.nameRowsY, null, 2)
   ].join("\n");
 
   const lineDebug = mergedRows.map((row, idx) => {
     return [
       `${idx + 1}.`,
+      `y=${Math.round(row.y || 0)}`,
       `flightRaw=${row.flightRaw || "-"}`,
       `nameRaw=${row.nameRaw || "-"}`,
       `standRaw=${row.standRaw || "-"}`,
