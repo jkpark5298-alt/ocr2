@@ -1,11 +1,13 @@
-const CACHE_NAME = "ocr-stand-search-v11";
+const CACHE_NAME = "ocr-pwa-v7";
 
 const ASSETS = [
   "./",
   "./index.html",
+  "./style.css",
   "./app.js",
-  "./sw.js",
-  "./manifest.json"
+  "./manifest.json",
+  "./icon-192.png",
+  "./icon-512.png"
 ];
 
 self.addEventListener("install", (event) => {
@@ -19,7 +21,11 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.map((key) => {
+          if (key !== CACHE_NAME) {
+            return caches.delete(key);
+          }
+        })
       )
     )
   );
@@ -27,19 +33,14 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  const request = event.request;
-  if (request.method !== "GET") return;
+  const req = event.request;
+
+  if (req.method !== "GET") return;
 
   event.respondWith(
-    caches.match(request).then((cached) => {
+    caches.match(req).then((cached) => {
       if (cached) return cached;
-      return fetch(request)
-        .then((response) => {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-          return response;
-        })
-        .catch(() => caches.match("./index.html"));
+      return fetch(req);
     })
   );
 });
