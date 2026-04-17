@@ -58,6 +58,9 @@ const FIXED_COLUMN_HINTS = {
 };
 
 const ROW_MATCH_TOLERANCE = 18;
+const NAME_SLOT_MAX_TOLERANCE = 16;
+const NAME_ORDINAL_WEIGHT = 6;
+const INF = 1e9;
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text;
@@ -856,7 +859,7 @@ function hasEnoughNameRows(rows) {
 function rowsFromResultWithY(result, type) {
   const lines = mergeNearRows(linesFromTesseract(result), 10);
   const words = groupWordsIntoRows(result?.data?.words || [], 16);
-  let base = lines.length ? lines : words;
+  const base = lines.length ? lines : words;
 
   if (type === "flight") return cleanFlightRowsWithY(base);
   if (type === "stand") return cleanStandRowsWithY(base);
@@ -864,69 +867,221 @@ function rowsFromResultWithY(result, type) {
   return [];
 }
 
-function chooseBestAnchorRows(flightRows, standRows) {
-  if (flightRows.length >= standRows.length) return flightRows;
-  return standRows;
+function median(values) {
+  if (!values.length) return 0;
+  const arr = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(arr.length / 2);
+  return arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
 }
 
-function findNearestUnusedRow(targetY, candidates, usedSet, tolerance) {
-  let bestIdx = -1;
-  let bestDist = Infinity;
+function chooseBestAnchorRows(flightRows, standRows) {
+  return flightRows.length >= standRows.length ? flightRows : standRows;
+}
 
+function findNearestRow(targetY, candidates, tolerance) {
+  let best = null;
   for (let i = 0; i < candidates.length; i++) {
-    if (usedSet.has(i)) continue;
-    const dist = Math.abs(candidates[i].y - targetY);
-    if (dist <= tolerance && dist < bestDist) {
-      bestIdx = i;
-      bestDist = dist;
+    const row = candidates[i];
+    const dist = Math.abs(row.y - targetY);
+    if (dist > tolerance) continue;
+    if (!best || dist < best.dist) {
+      best = { idx: i, row, dist };
     }
   }
-
-  if (bestIdx < 0) return null;
-  return { idx: bestIdx, row: candidates[bestIdx], dist: bestDist };
+  return best;
 }
 
-function buildMergedRowsByY(flightRowsY, standRowsY, nameRowsY) {
+function buildSlots(flightRowsY, standRowsY) {
   const anchors = chooseBestAnchorRows(flightRowsY, standRowsY)
     .slice()
     .sort((a, b) => a.y - b.y);
 
-  const usedFlight = new Set();
-  const usedStand = new Set();
-  const usedName = new Set();
-
-  const removeLeadingZero = !!removeZeroEl?.checked;
-  const merged = [];
-
-  for (const anchor of anchors) {
-    const flightMatch = findNearestUnusedRow(anchor.y, flightRowsY, usedFlight, ROW_MATCH_TOLERANCE);
-    const standMatch = findNearestUnusedRow(anchor.y, standRowsY, usedStand, ROW_MATCH_TOLERANCE);
-    const nameMatch = findNearestUnusedRow(anchor.y, nameRowsY, usedName, ROW_MATCH_TOLERANCE);
-
-    if (flightMatch) usedFlight.add(flightMatch.idx);
-    if (standMatch) usedStand.add(standMatch.idx);
-    if (nameMatch) usedName.add(nameMatch.idx);
+  return anchors.map((anchor) => {
+    const flightMatch = findNearestRow(anchor.y, flightRowsY, ROW_MATCH_TOLERANCE);
+    const standMatch = findNearestRow(anchor.y, standRowsY, ROW_MATCH_TOLERANCE);
 
     const flightRaw = flightMatch?.row?.text || "";
     const standRaw = standMatch?.row?.text || "";
-    const nameRaw = nameMatch?.row?.text || "";
 
-    const parsedName = parseNameLine(nameRaw);
-    const finalName = KNOWN_NAMES.includes(parsedName.name) ? parsedName.name : "";
-
-    merged.push({
+    return {
       y: anchor.y,
-      flightNo: extractFlightNoFromText(flightRaw, removeLeadingZero),
-      stand: extractStandFromText(standRaw),
-      name: finalName,
-      nameRaw: parsedName.raw || nameRaw || "",
       flightRaw,
       standRaw,
-      raw: [flightRaw, standRaw, parsedName.raw || nameRaw].filter(Boolean).join(" | ")
+      flightNo: extractFlightNoFromText(flightRaw, !!removeZeroEl?.checked),
+      stand: extractStandFromText(standRaw),
+      name: "",
+      nameRaw: "",
+      raw: [flightRaw, standRaw].filter(Boolean).join(" | ")
+    };
+  });
+}
+
+function buildValidNameCandidates(nameRowsY) {
+  return nameRowsY
+    .map((row) => {
+      const parsed = parseNameLine(row.text);
+      const name = KNOWN_NAMES.includes(parsed.name) ? parsed.name : "";
+      return {
+        y: row.y,
+        text: row.text,
+        parsed,
+        name
+      };
+    })
+    .filter((row) => row.name)
+    .sort((a, b) => a.y - b.y);
+}
+
+function getRowPitch(slots) {
+  if (slots.length < 2) return 0;
+  const diffs = [];
+  for (let i = 1; i < slots.length; i++) {
+    const diff = slots[i].y - slots[i - 1].y;
+    if (diff > 4) diffs.push(diff);
+  }
+  return median(diffs);
+}
+
+function getNameSlotTolerance(slots) {
+  const pitch = getRowPitch(slots);
+  if (!pitch) return NAME_SLOT_MAX_TOLERANCE;
+  return Math.max(10, Math.min(NAME_SLOT_MAX_TOLERANCE, Math.floor(pitch * 0.42)));
+}
+
+function expectedSlotIndex(nameIndex, nameCount, slotCount) {
+  if (slotCount <= 1) return 0;
+  if (nameCount <= 1) return Math.floor((slotCount - 1) / 2);
+  return ((nameIndex + 1) * (slotCount + 1)) / (nameCount + 1) - 1;
+}
+
+function assignNamesToSlotsConservatively(slots, nameCandidates) {
+  const n = slots.length;
+  const m = nameCandidates.length;
+
+  if (!n || !m) return {
+    slots,
+    assignmentDebug: []
+  };
+
+  const tol = getNameSlotTolerance(slots);
+
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(INF));
+  const choice = Array.from({ length: m + 1 }, () => Array(n + 1).fill(null));
+
+  for (let i = 0; i <= n; i++) {
+    dp[0][i] = 0;
+    if (i > 0) choice[0][i] = { type: "skip", prevJ: 0, prevI: i - 1 };
+  }
+
+  for (let j = 0; j <= m; j++) {
+    for (let i = 0; i < n; i++) {
+      if (dp[j][i] >= INF) continue;
+
+      if (dp[j][i] < dp[j][i + 1]) {
+        dp[j][i + 1] = dp[j][i];
+        choice[j][i + 1] = { type: "skip", prevJ: j, prevI: i };
+      }
+
+      if (j >= m) continue;
+
+      const nameRow = nameCandidates[j];
+      const slot = slots[i];
+      const dist = Math.abs(nameRow.y - slot.y);
+
+      if (dist > tol) continue;
+
+      const expected = expectedSlotIndex(j, m, n);
+      const ordinalPenalty = Math.abs(i - expected) * NAME_ORDINAL_WEIGHT;
+      const cost = dist + ordinalPenalty;
+
+      if (dp[j][i] + cost < dp[j + 1][i + 1]) {
+        dp[j + 1][i + 1] = dp[j][i] + cost;
+        choice[j + 1][i + 1] = {
+          type: "assign",
+          prevJ: j,
+          prevI: i,
+          slotIndex: i,
+          nameIndex: j,
+          dist,
+          expected,
+          cost
+        };
+      }
+    }
+  }
+
+  let endI = 0;
+  let bestCost = INF;
+  for (let i = 0; i <= n; i++) {
+    if (dp[m][i] < bestCost) {
+      bestCost = dp[m][i];
+      endI = i;
+    }
+  }
+
+  const assignedPairs = [];
+  let cj = m;
+  let ci = endI;
+
+  while (ci >= 0 && cj >= 0) {
+    const ch = choice[cj][ci];
+    if (!ch) break;
+    if (ch.type === "assign") {
+      assignedPairs.push({
+        slotIndex: ch.slotIndex,
+        nameIndex: ch.nameIndex,
+        dist: ch.dist,
+        expected: ch.expected,
+        cost: ch.cost
+      });
+    }
+    const nextJ = ch.prevJ;
+    const nextI = ch.prevI;
+    cj = nextJ;
+    ci = nextI;
+    if (cj === 0 && ci === 0) break;
+  }
+
+  assignedPairs.reverse();
+
+  const outSlots = slots.map((s) => ({ ...s }));
+  const assignmentDebug = [];
+
+  for (const pair of assignedPairs) {
+    const slot = outSlots[pair.slotIndex];
+    const nameRow = nameCandidates[pair.nameIndex];
+
+    slot.name = nameRow.name;
+    slot.nameRaw = nameRow.parsed.raw || nameRow.text || "";
+    slot.raw = [slot.flightRaw, slot.standRaw, slot.nameRaw].filter(Boolean).join(" | ");
+
+    assignmentDebug.push({
+      slotIndex: pair.slotIndex,
+      slotY: slot.y,
+      nameIndex: pair.nameIndex,
+      nameY: nameRow.y,
+      dist: pair.dist,
+      expected: pair.expected,
+      cost: pair.cost,
+      nameRaw: slot.nameRaw,
+      finalName: slot.name
     });
   }
 
-  return merged;
+  return {
+    slots: outSlots,
+    assignmentDebug
+  };
+}
+
+function buildMergedRowsBySlots(flightRowsY, standRowsY, nameRowsY) {
+  const slots = buildSlots(flightRowsY, standRowsY);
+  const nameCandidates = buildValidNameCandidates(nameRowsY);
+  const assigned = assignNamesToSlotsConservatively(slots, nameCandidates);
+  return {
+    mergedRows: assigned.slots,
+    nameAssignmentDebug: assigned.assignmentDebug
+  };
 }
 
 function dedupeRows(rows) {
@@ -934,7 +1089,7 @@ function dedupeRows(rows) {
   const out = [];
 
   for (const row of rows) {
-    const key = [row.flightNo || "", row.nameRaw || "", row.stand || "", Math.round(row.y || 0)].join("|");
+    const key = [row.flightNo || "", row.stand || "", Math.round(row.y || 0)].join("|");
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(row);
@@ -1035,7 +1190,11 @@ async function extractRowsBySeparatedColumns(file) {
     pass = await extractUsingRanges(tableCanvas, headerCanvas, fixedColumnRanges, "fixed");
   }
 
-  const mergedRows = buildMergedRowsByY(pass.flightRowsY, pass.standRowsY, pass.nameRowsY);
+  const { mergedRows, nameAssignmentDebug } = buildMergedRowsBySlots(
+    pass.flightRowsY,
+    pass.standRowsY,
+    pass.nameRowsY
+  );
 
   const rows = dedupeRows(
     mergedRows
@@ -1078,7 +1237,10 @@ async function extractRowsBySeparatedColumns(file) {
     JSON.stringify(pass.standRowsY, null, 2),
     "",
     "[NAME ROWS Y]",
-    JSON.stringify(pass.nameRowsY, null, 2)
+    JSON.stringify(pass.nameRowsY, null, 2),
+    "",
+    "[NAME SLOT ASSIGNMENT]",
+    JSON.stringify(nameAssignmentDebug, null, 2)
   ].join("\n");
 
   const lineDebug = mergedRows.map((row, idx) => {
