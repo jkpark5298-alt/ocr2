@@ -54,12 +54,11 @@ const TABLE_RATIO = { x1: 0.02, y1: 0.01, x2: 0.98, y2: 0.98 };
 const HEADER_SCAN_RATIO = { x1: 0.00, y1: 0.00, x2: 1.00, y2: 0.16 };
 const BODY_SCAN_RATIO = { x1: 0.00, y1: 0.10, x2: 1.00, y2: 0.96 };
 
-// 외항사스케줄 8열 기준:
-// ETD/ETA | 편명 | 등록기호 | DEP | ARR | 주기장 | R/O L/D | T/O R/I
+// 외항사스케줄 8열 대략 비율 (사진마다 probe로 재보정)
 const FIXED_COLUMN_HINTS = {
-  flight: { x0r: 0.11, x1r: 0.27 },
-  stand:  { x0r: 0.58, x1r: 0.72 },
-  name:   { x0r: 0.72, x1r: 0.90 }
+  flight: { x0r: 0.12, x1r: 0.26 },
+  stand:  { x0r: 0.60, x1r: 0.73 },
+  name:   { x0r: 0.73, x1r: 0.90 }
 };
 
 const ROW_MATCH_TOLERANCE = 18;
@@ -1339,6 +1338,115 @@ async function extractUsingRanges(tableCanvas, headerCanvas, columnRanges, modeL
   };
 }
 
+function bandScoreFromText(text, langHint) {
+  const t = String(text || "");
+  const upper = t.toUpperCase();
+  const kj = (upper.match(/\bKJ[\s\-_:|./]*\d{3,4}\b/g) || []).length;
+  const stands = (upper.match(/\b(621|622|623|624|625|626|627|672|673|674[LRI18B]?)\b/g) || []).length;
+  const times = (upper.match(/\b\d{1,2}:\d{2}\b/g) || []).length;
+  const hangul = (t.match(/[가-힣]{2,4}/g) || []).length;
+  const known = KNOWN_NAMES.reduce((n, name) => n + (t.includes(name) ? 1 : 0), 0);
+
+  return {
+    kj,
+    stands,
+    times,
+    hangul,
+    known,
+    flightScore: kj * 5 - times * 3,
+    standScore: stands * 6 - kj * 2,
+    nameScore: known * 8 + hangul * 2 - kj * 2,
+    langHint
+  };
+}
+
+function mergeBandRanges(bands, totalWidth, padRatio = 0.01) {
+  if (!bands.length) return null;
+  const pad = Math.floor(totalWidth * padRatio);
+  const x0 = Math.max(0, Math.min(...bands.map((b) => b.x0)) - pad);
+  const x1 = Math.min(totalWidth, Math.max(...bands.map((b) => b.x1)) + pad);
+  if (x1 <= x0 + 8) return null;
+  return { x0, x1 };
+}
+
+async function probeColumnRangesByContent(tableCanvas) {
+  const bands = 12;
+  const sampleY = Math.floor(tableCanvas.height * 0.14);
+  const sampleH = Math.max(80, Math.floor(tableCanvas.height * 0.42));
+  const bandW = Math.max(20, Math.floor(tableCanvas.width / bands));
+  const scored = [];
+
+  for (let i = 0; i < bands; i++) {
+    const x0 = i * bandW;
+    const x1 = i === bands - 1 ? tableCanvas.width : (i + 1) * bandW;
+    const raw = cropCanvasByPx(tableCanvas, x0, sampleY, Math.max(1, x1 - x0), sampleH);
+    const useNameLang = i >= Math.floor(bands * 0.55);
+    setStatus(`열 자동탐지 중... (${i + 1}/${bands})`);
+    const pre = preprocessColumn(raw, useNameLang ? "name" : "flight");
+    const result = await recognizeCanvasDetailed(
+      pre,
+      useNameLang ? "kor+eng" : "eng",
+      useNameLang ? "name" : "flight"
+    );
+    const score = bandScoreFromText(result?.data?.text || "", useNameLang ? "kor" : "eng");
+    scored.push({ i, x0, x1, ...score, text: result?.data?.text || "" });
+  }
+
+  const bestFlight = [...scored].sort((a, b) => b.flightScore - a.flightScore)[0];
+  const bestStand = [...scored].sort((a, b) => b.standScore - a.standScore)[0];
+  const bestName = [...scored].sort((a, b) => b.nameScore - a.nameScore)[0];
+
+  const flightBands = scored.filter((b) => b.flightScore > 0 && b.kj >= 1 && Math.abs(b.i - bestFlight.i) <= 1);
+  const standBands = scored.filter((b) => b.standScore > 0 && b.stands >= 1 && Math.abs(b.i - bestStand.i) <= 1);
+  const nameBands = scored.filter((b) => b.nameScore > 0 && (b.hangul >= 1 || b.known >= 1) && Math.abs(b.i - bestName.i) <= 1);
+
+  const flight = mergeBandRanges(flightBands.length ? flightBands : bestFlight.flightScore > 0 ? [bestFlight] : [], tableCanvas.width, 0.008);
+  const stand = mergeBandRanges(standBands.length ? standBands : bestStand.standScore > 0 ? [bestStand] : [], tableCanvas.width, 0.008);
+  const name = mergeBandRanges(nameBands.length ? nameBands : bestName.nameScore > 0 ? [bestName] : [], tableCanvas.width, 0.012);
+
+  const fixed = buildFixedColumnRangeMap(tableCanvas.width);
+  const ranges = {
+    flight: flight || fixed.flight,
+    stand: stand || fixed.stand,
+    name: name || fixed.name
+  };
+
+  // 편명/주기장이 같으면 고정값으로 보정
+  const overlap =
+    Math.min(ranges.flight.x1, ranges.stand.x1) - Math.max(ranges.flight.x0, ranges.stand.x0);
+  if (overlap > (ranges.flight.x1 - ranges.flight.x0) * 0.5) {
+    ranges.flight = fixed.flight;
+    ranges.stand = fixed.stand;
+  }
+
+  return {
+    ranges,
+    debug: scored.map((s) => ({
+      i: s.i,
+      kj: s.kj,
+      stands: s.stands,
+      times: s.times,
+      hangul: s.hangul,
+      known: s.known,
+      flightScore: s.flightScore,
+      standScore: s.standScore,
+      nameScore: s.nameScore
+    }))
+  };
+}
+
+function passQuality(pass) {
+  const standText = String(pass.standResult?.data?.text || "");
+  const standKj = (standText.match(/\bKJ\s*\d{3,4}\b/gi) || []).length;
+  return {
+    flights: hasEnoughFlightRows(pass.flightRowsY),
+    stands: hasEnoughStandRows(pass.standRowsY),
+    names: hasEnoughNameRows(pass.nameRowsY),
+    timeLike: looksLikeTimeColumn(pass.flightResult, pass.flightRowsY),
+    standLooksLikeFlight: standKj >= 2
+  };
+}
+
 async function extractRowsBySeparatedColumns(file) {
   const img = await fileToImage(file);
   const processed = preprocessFullImage(img);
@@ -1346,31 +1454,74 @@ async function extractRowsBySeparatedColumns(file) {
   const tableCanvas = cropCanvasByRatio(processed, TABLE_RATIO);
   const headerCanvas = cropCanvasByRatio(tableCanvas, HEADER_SCAN_RATIO);
 
+  setStatus("열 위치 자동탐지 중...");
+  const probed = await probeColumnRangesByContent(tableCanvas);
+
   setStatus("헤더 분석 중...");
   const headerForOCR = preprocessColumn(headerCanvas, "header");
   const headerResult = await recognizeCanvasDetailed(headerForOCR, "kor+eng", "header");
-
   const headerDetected = detectHeadersFromHeaderResult(headerResult, headerCanvas.width);
   const autoColumnRanges = buildColumnRangeMap(headerDetected, tableCanvas.width);
   const fixedColumnRanges = buildFixedColumnRangeMap(tableCanvas.width);
 
-  let usedMode = "auto";
-  let usedRanges = autoColumnRanges;
-  let pass = await extractUsingRanges(tableCanvas, headerCanvas, autoColumnRanges, "auto");
+  const candidates = [
+    { mode: "probe", ranges: probed.ranges },
+    { mode: "auto", ranges: autoColumnRanges },
+    { mode: "fixed", ranges: fixedColumnRanges }
+  ];
 
-  const autoBad =
-    looksLikeTimeColumn(pass.flightResult, pass.flightRowsY) ||
-    !hasEnoughFlightRows(pass.flightRowsY) ||
-    !hasEnoughStandRows(pass.standRowsY) ||
-    !hasEnoughNameRows(pass.nameRowsY);
+  let usedMode = "probe";
+  let usedRanges = probed.ranges;
+  let pass = await extractUsingRanges(tableCanvas, headerCanvas, probed.ranges, "probe");
+  let quality = passQuality(pass);
+  let best = { pass, ranges: probed.ranges, mode: "probe", score: 0 };
 
-  if (autoBad) {
-    usedMode = "fixed-fallback";
-    usedRanges = fixedColumnRanges;
-    pass = await extractUsingRanges(tableCanvas, headerCanvas, fixedColumnRanges, "fixed");
+  const scorePass = (p, q) => {
+    let s = 0;
+    if (q.flights) s += 5;
+    if (q.stands) s += 5;
+    if (q.names) s += 3;
+    if (q.timeLike) s -= 6;
+    if (q.standLooksLikeFlight) s -= 5;
+    s += Math.min(8, p.flightRowsY.length);
+    s += Math.min(8, p.standRowsY.filter((r) => extractStandFromText(r.text)).length);
+    return s;
+  };
+
+  best.score = scorePass(pass, quality);
+
+  for (const cand of candidates.slice(1)) {
+    if (best.score >= 12 && quality.flights && quality.stands) break;
+    const trial = await extractUsingRanges(tableCanvas, headerCanvas, cand.ranges, cand.mode);
+    const q = passQuality(trial);
+    const s = scorePass(trial, q);
+    if (s > best.score) {
+      best = { pass: trial, ranges: cand.ranges, mode: cand.mode, score: s };
+      pass = trial;
+      quality = q;
+      usedMode = cand.mode;
+      usedRanges = cand.ranges;
+    }
   }
 
-  // 그래도 편명이 시간이면 편명 열을 오른쪽으로 한 칸 더 민다
+  // stand 칸에 KJ가 보이면 그 범위를 편명으로 승격하고 주기장은 오른쪽으로 이동
+  if (quality.standLooksLikeFlight) {
+    usedMode = `${best.mode}+swap-stand-to-flight`;
+    const w = tableCanvas.width;
+    const swapped = {
+      flight: { ...usedRanges.stand },
+      stand: {
+        x0: Math.min(w - 20, usedRanges.stand.x1 + Math.floor(w * 0.02)),
+        x1: Math.min(w, usedRanges.stand.x1 + Math.floor(w * 0.14))
+      },
+      name: usedRanges.name
+    };
+    usedRanges = swapped;
+    pass = await extractUsingRanges(tableCanvas, headerCanvas, swapped, "swap");
+    quality = passQuality(pass);
+    best = { pass, ranges: swapped, mode: usedMode, score: scorePass(pass, quality) };
+  }
+
   if (looksLikeTimeColumn(pass.flightResult, pass.flightRowsY)) {
     usedMode = `${usedMode}+flight-shift`;
     const shifted = {
@@ -1392,13 +1543,16 @@ async function extractRowsBySeparatedColumns(file) {
 
   const rows = dedupeRows(
     mergedRows
-      .filter((row) => row.flightNo && row.stand)
+      .filter((row) => row.flightNo || row.stand)
       .filter(isSearchMatched)
   );
 
   const debugText = [
     "[MODE]",
     usedMode,
+    "",
+    "[PROBE BAND SCORES]",
+    JSON.stringify(probed.debug, null, 2),
     "",
     "[HEADER OCR TEXT]",
     headerResult?.data?.text || "",
