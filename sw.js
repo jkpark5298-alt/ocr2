@@ -1,4 +1,4 @@
-const CACHE_NAME = "ocr2-stand-search-v3";
+const CACHE_NAME = "ocr2-stand-search-v4";
 
 const ASSETS = [
   "./",

@@ -300,13 +300,23 @@ function preprocessFullImage(img) {
 }
 
 function preprocessColumn(canvas, type) {
-  const out = createCanvas(canvas.width, canvas.height);
+  const srcW = Math.max(1, canvas.width);
+  const srcH = Math.max(1, canvas.height);
+  // 너무 좁은 입력은 먼저 확대해서 Tesseract 최소 폭 오류를 피함
+  const minW = 64;
+  const scaleUp = srcW < minW ? minW / srcW : 1;
+  const baseW = Math.max(minW, Math.floor(srcW * scaleUp));
+  const baseH = Math.max(32, Math.floor(srcH * scaleUp));
+
+  const out = createCanvas(baseW, baseH);
   const ctx = out.getContext("2d");
-  // 좌우 여백을 넣어 글자 잘림/세로선 간섭을 줄임
-  const padX = type === "name" ? 10 : 6;
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, out.width, out.height);
-  ctx.drawImage(canvas, padX, 0, Math.max(1, out.width - padX * 2), out.height);
+
+  const padX = Math.min(8, Math.floor(out.width * 0.08));
+  const drawW = Math.max(8, out.width - padX * 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(canvas, 0, 0, srcW, srcH, padX, 0, drawW, out.height);
 
   const imageData = ctx.getImageData(0, 0, out.width, out.height);
   const data = imageData.data;
@@ -316,7 +326,6 @@ function preprocessColumn(canvas, type) {
     let v = gray;
 
     if (type === "flight") {
-      // 흰 배경 + 검정 글자 유지 (회색 배경으로 만들지 않음)
       if (gray > 190) v = 255;
       else if (gray < 160) v = 0;
       else v = gray > 175 ? 255 : 0;
@@ -325,7 +334,6 @@ function preprocessColumn(canvas, type) {
       else if (gray < 155) v = 0;
       else v = gray > 172 ? 255 : 0;
     } else if (type === "name") {
-      // 한글은 강한 이진화보다 그레이스케일 유지가 유리
       if (gray > 210) v = 255;
       else if (gray < 120) v = 0;
       else v = gray;
@@ -347,19 +355,24 @@ function preprocessColumn(canvas, type) {
 function cropCanvasByRatio(sourceCanvas, ratio) {
   const sx = Math.floor(sourceCanvas.width * ratio.x1);
   const sy = Math.floor(sourceCanvas.height * ratio.y1);
-  const sw = Math.floor(sourceCanvas.width * (ratio.x2 - ratio.x1));
-  const sh = Math.floor(sourceCanvas.height * (ratio.y2 - ratio.y1));
-
-  const out = createCanvas(sw, sh);
-  const ctx = out.getContext("2d");
-  ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-  return out;
+  const sw = Math.max(1, Math.floor(sourceCanvas.width * (ratio.x2 - ratio.x1)));
+  const sh = Math.max(1, Math.floor(sourceCanvas.height * (ratio.y2 - ratio.y1)));
+  return cropCanvasByPx(sourceCanvas, sx, sy, sw, sh);
 }
 
 function cropCanvasByPx(sourceCanvas, sx, sy, sw, sh) {
-  const out = createCanvas(sw, sh);
+  const safeW = Math.max(1, Math.floor(sw));
+  const safeH = Math.max(1, Math.floor(sh));
+  const safeX = Math.max(0, Math.min(sourceCanvas.width - 1, Math.floor(sx)));
+  const safeY = Math.max(0, Math.min(sourceCanvas.height - 1, Math.floor(sy)));
+  const clippedW = Math.max(1, Math.min(safeW, sourceCanvas.width - safeX));
+  const clippedH = Math.max(1, Math.min(safeH, sourceCanvas.height - safeY));
+
+  const out = createCanvas(clippedW, clippedH);
   const ctx = out.getContext("2d");
-  ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, clippedW, clippedH);
+  ctx.drawImage(sourceCanvas, safeX, safeY, clippedW, clippedH, 0, 0, clippedW, clippedH);
   return out;
 }
 
@@ -425,6 +438,10 @@ function renderCropDebugPreviews({ tableCanvas, headerCanvas, flightCanvas, stan
 }
 
 async function recognizeCanvasDetailed(canvas, lang, type) {
+  if (!canvas || canvas.width < 3 || canvas.height < 3) {
+    return { data: { text: "", words: [], lines: [] } };
+  }
+
   const options = { logger: () => {} };
 
   if (type === "flight") {
@@ -439,7 +456,12 @@ async function recognizeCanvasDetailed(canvas, lang, type) {
     options.tessedit_pageseg_mode = 6;
   }
 
-  return await Tesseract.recognize(canvas, lang, options);
+  try {
+    return await Tesseract.recognize(canvas, lang, options);
+  } catch (err) {
+    console.warn("OCR skip:", type, canvas.width, canvas.height, err);
+    return { data: { text: "", words: [], lines: [] } };
+  }
 }
 
 function sortWords(words) {
@@ -883,48 +905,58 @@ function detectHeadersFromHeaderResult(headerResult, headerCanvasWidth) {
 }
 
 function buildColumnRangeMap(detected, totalWidth) {
-  const cols = [
-    { type: "flight", ...detected.flight },
-    { type: "stand", ...detected.stand },
-    { type: "name", ...detected.name }
-  ].sort((a, b) => a.x0 - b.x0);
+  const fixed = buildFixedColumnRangeMap(totalWidth);
+  const minW = Math.max(48, Math.floor(totalWidth * 0.08));
+
+  const raw = {
+    flight: detected.flight || fixed.flight,
+    stand: detected.stand || fixed.stand,
+    name: detected.name || fixed.name
+  };
 
   const ranges = {};
-  const pad = { flight: 18, stand: 14, name: 20 };
+  for (const key of ["flight", "stand", "name"]) {
+    const col = raw[key];
+    let left = Math.max(0, Math.floor(col.x0 - 12));
+    let right = Math.min(totalWidth, Math.floor(col.x1 + 12));
 
-  for (let i = 0; i < cols.length; i++) {
-    const col = cols[i];
-    const prev = cols[i - 1];
-    const next = cols[i + 1];
-    const p = pad[col.type] || 12;
-
-    let left = Math.max(0, col.x0 - p);
-    let right = Math.min(totalWidth, col.x1 + p);
-
-    // 헤더 텍스트 폭이 좁아도 열 폭을 최소 확보
-    const minWidth = Math.floor(totalWidth * (col.type === "flight" ? 0.12 : 0.10));
-    if (right - left < minWidth) {
-      const mid = (left + right) / 2;
-      left = Math.max(0, Math.floor(mid - minWidth / 2));
-      right = Math.min(totalWidth, Math.floor(mid + minWidth / 2));
+    if (right - left < minW) {
+      const mid = (Math.max(col.x0, 0) + Math.min(col.x1, totalWidth)) / 2 || totalWidth / 2;
+      left = Math.max(0, Math.floor(mid - minW / 2));
+      right = Math.min(totalWidth, left + minW);
+      if (right - left < minW) {
+        left = Math.max(0, right - minW);
+      }
     }
 
-    if (prev) left = Math.max(left, Math.floor((prev.x1 + col.x0) / 2));
-    if (next) right = Math.min(right, Math.floor((col.x1 + next.x0) / 2));
-
-    if (right <= left + 10) {
-      left = Math.max(0, col.x0 - p);
-      right = Math.min(totalWidth, col.x1 + p);
-    }
-
-    ranges[col.type] = { x0: left, x1: right };
+    ranges[key] = { x0: left, x1: right };
   }
 
-  return ranges;
+  return sanitizeColumnRanges(ranges, totalWidth);
 }
 
 function buildFixedColumnRangeMap(totalWidth) {
-  return {
+  return sanitizeColumnRanges(
+    {
+      flight: {
+        x0: Math.floor(totalWidth * FIXED_COLUMN_HINTS.flight.x0r),
+        x1: Math.floor(totalWidth * FIXED_COLUMN_HINTS.flight.x1r)
+      },
+      stand: {
+        x0: Math.floor(totalWidth * FIXED_COLUMN_HINTS.stand.x0r),
+        x1: Math.floor(totalWidth * FIXED_COLUMN_HINTS.stand.x1r)
+      },
+      name: {
+        x0: Math.floor(totalWidth * FIXED_COLUMN_HINTS.name.x0r),
+        x1: Math.floor(totalWidth * FIXED_COLUMN_HINTS.name.x1r)
+      }
+    },
+    totalWidth
+  );
+}
+
+function sanitizeColumnRanges(ranges, totalWidth) {
+  const fixedHints = {
     flight: {
       x0: Math.floor(totalWidth * FIXED_COLUMN_HINTS.flight.x0r),
       x1: Math.floor(totalWidth * FIXED_COLUMN_HINTS.flight.x1r)
@@ -938,6 +970,26 @@ function buildFixedColumnRangeMap(totalWidth) {
       x1: Math.floor(totalWidth * FIXED_COLUMN_HINTS.name.x1r)
     }
   };
+
+  const minW = Math.max(48, Math.floor(totalWidth * 0.08));
+  const out = {};
+
+  for (const key of ["flight", "stand", "name"]) {
+    const fallback = fixedHints[key];
+    let x0 = Number(ranges?.[key]?.x0);
+    let x1 = Number(ranges?.[key]?.x1);
+
+    if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 - x0 < minW) {
+      out[key] = { ...fallback };
+      continue;
+    }
+
+    x0 = Math.max(0, Math.min(totalWidth - minW, Math.floor(x0)));
+    x1 = Math.max(x0 + minW, Math.min(totalWidth, Math.floor(x1)));
+    out[key] = { x0, x1 };
+  }
+
+  return out;
 }
 
 function hasEnoughStandRows(rows) {
@@ -1294,10 +1346,11 @@ function isSearchMatched(row) {
 async function extractUsingRanges(tableCanvas, headerCanvas, columnRanges, modeLabel) {
   const bodyYOffset = Math.floor(tableCanvas.height * BODY_SCAN_RATIO.y1);
   const bodyHeight = Math.max(1, Math.floor(tableCanvas.height * (BODY_SCAN_RATIO.y2 - BODY_SCAN_RATIO.y1)));
+  const ranges = sanitizeColumnRanges(columnRanges, tableCanvas.width);
 
-  const flightRange = columnRanges.flight;
-  const standRange = columnRanges.stand;
-  const nameRange = columnRanges.name;
+  const flightRange = ranges.flight;
+  const standRange = ranges.stand;
+  const nameRange = ranges.name;
 
   const flightCanvasRaw = cropCanvasByPx(tableCanvas, flightRange.x0, bodyYOffset, Math.max(1, flightRange.x1 - flightRange.x0), bodyHeight);
   const standCanvasRaw = cropCanvasByPx(tableCanvas, standRange.x0, bodyYOffset, Math.max(1, standRange.x1 - standRange.x0), bodyHeight);
@@ -1334,7 +1387,8 @@ async function extractUsingRanges(tableCanvas, headerCanvas, columnRanges, modeL
     nameResult,
     flightRowsY,
     standRowsY,
-    nameRowsY
+    nameRowsY,
+    ranges
   };
 }
 
@@ -1405,18 +1459,33 @@ async function probeColumnRangesByContent(tableCanvas) {
   const name = mergeBandRanges(nameBands.length ? nameBands : bestName.nameScore > 0 ? [bestName] : [], tableCanvas.width, 0.012);
 
   const fixed = buildFixedColumnRangeMap(tableCanvas.width);
-  const ranges = {
-    flight: flight || fixed.flight,
-    stand: stand || fixed.stand,
-    name: name || fixed.name
-  };
+  const ranges = sanitizeColumnRanges(
+    {
+      flight: flight || fixed.flight,
+      stand: stand || fixed.stand,
+      name: name || fixed.name
+    },
+    tableCanvas.width
+  );
 
-  // 편명/주기장이 같으면 고정값으로 보정
+  // 편명/주기장이 과도하게 겹치면 고정값 사용
   const overlap =
     Math.min(ranges.flight.x1, ranges.stand.x1) - Math.max(ranges.flight.x0, ranges.stand.x0);
   if (overlap > (ranges.flight.x1 - ranges.flight.x0) * 0.5) {
-    ranges.flight = fixed.flight;
-    ranges.stand = fixed.stand;
+    return {
+      ranges: fixed,
+      debug: scored.map((s) => ({
+        i: s.i,
+        kj: s.kj,
+        stands: s.stands,
+        times: s.times,
+        hangul: s.hangul,
+        known: s.known,
+        flightScore: s.flightScore,
+        standScore: s.standScore,
+        nameScore: s.nameScore
+      }))
+    };
   }
 
   return {
@@ -1465,16 +1534,16 @@ async function extractRowsBySeparatedColumns(file) {
   const fixedColumnRanges = buildFixedColumnRangeMap(tableCanvas.width);
 
   const candidates = [
+    { mode: "fixed", ranges: fixedColumnRanges },
     { mode: "probe", ranges: probed.ranges },
-    { mode: "auto", ranges: autoColumnRanges },
-    { mode: "fixed", ranges: fixedColumnRanges }
+    { mode: "auto", ranges: autoColumnRanges }
   ];
 
-  let usedMode = "probe";
-  let usedRanges = probed.ranges;
-  let pass = await extractUsingRanges(tableCanvas, headerCanvas, probed.ranges, "probe");
+  let usedMode = "fixed";
+  let usedRanges = fixedColumnRanges;
+  let pass = await extractUsingRanges(tableCanvas, headerCanvas, fixedColumnRanges, "fixed");
   let quality = passQuality(pass);
-  let best = { pass, ranges: probed.ranges, mode: "probe", score: 0 };
+  let best = { pass, ranges: pass.ranges || fixedColumnRanges, mode: "fixed", score: 0 };
 
   const scorePass = (p, q) => {
     let s = 0;
@@ -1489,6 +1558,7 @@ async function extractRowsBySeparatedColumns(file) {
   };
 
   best.score = scorePass(pass, quality);
+  usedRanges = best.ranges;
 
   for (const cand of candidates.slice(1)) {
     if (best.score >= 12 && quality.flights && quality.stands) break;
@@ -1496,11 +1566,11 @@ async function extractRowsBySeparatedColumns(file) {
     const q = passQuality(trial);
     const s = scorePass(trial, q);
     if (s > best.score) {
-      best = { pass: trial, ranges: cand.ranges, mode: cand.mode, score: s };
+      best = { pass: trial, ranges: trial.ranges || cand.ranges, mode: cand.mode, score: s };
       pass = trial;
       quality = q;
       usedMode = cand.mode;
-      usedRanges = cand.ranges;
+      usedRanges = best.ranges;
     }
   }
 
@@ -1508,29 +1578,37 @@ async function extractRowsBySeparatedColumns(file) {
   if (quality.standLooksLikeFlight) {
     usedMode = `${best.mode}+swap-stand-to-flight`;
     const w = tableCanvas.width;
-    const swapped = {
-      flight: { ...usedRanges.stand },
-      stand: {
-        x0: Math.min(w - 20, usedRanges.stand.x1 + Math.floor(w * 0.02)),
-        x1: Math.min(w, usedRanges.stand.x1 + Math.floor(w * 0.14))
+    const swapped = sanitizeColumnRanges(
+      {
+        flight: { ...usedRanges.stand },
+        stand: {
+          x0: usedRanges.stand.x1 + Math.floor(w * 0.02),
+          x1: usedRanges.stand.x1 + Math.floor(w * 0.14)
+        },
+        name: usedRanges.name
       },
-      name: usedRanges.name
-    };
+      w
+    );
     usedRanges = swapped;
     pass = await extractUsingRanges(tableCanvas, headerCanvas, swapped, "swap");
     quality = passQuality(pass);
-    best = { pass, ranges: swapped, mode: usedMode, score: scorePass(pass, quality) };
+    best = { pass, ranges: pass.ranges || swapped, mode: usedMode, score: scorePass(pass, quality) };
+    usedRanges = best.ranges;
   }
 
   if (looksLikeTimeColumn(pass.flightResult, pass.flightRowsY)) {
     usedMode = `${usedMode}+flight-shift`;
-    const shifted = {
-      ...usedRanges,
-      flight: {
-        x0: Math.min(tableCanvas.width - 20, usedRanges.flight.x0 + Math.floor(tableCanvas.width * 0.10)),
-        x1: Math.min(tableCanvas.width, usedRanges.flight.x1 + Math.floor(tableCanvas.width * 0.12))
-      }
-    };
+    const w = tableCanvas.width;
+    const shifted = sanitizeColumnRanges(
+      {
+        ...usedRanges,
+        flight: {
+          x0: usedRanges.flight.x0 + Math.floor(w * 0.10),
+          x1: usedRanges.flight.x1 + Math.floor(w * 0.12)
+        }
+      },
+      w
+    );
     usedRanges = shifted;
     pass = await extractUsingRanges(tableCanvas, headerCanvas, shifted, "flight-shift");
   }
