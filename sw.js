@@ -1,18 +1,28 @@
-const CACHE_NAME = "ocr-pwa-v7";
+const CACHE_NAME = "ocr2-stand-search-v1";
 
 const ASSETS = [
   "./",
   "./index.html",
-  "./style.css",
   "./app.js",
+  "./sw.js",
   "./manifest.json",
   "./icon-192.png",
-  "./icon-512.png"
+  "./icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await Promise.all(
+        ASSETS.map(async (asset) => {
+          try {
+            await cache.add(asset);
+          } catch (err) {
+            console.warn("cache skip:", asset, err);
+          }
+        })
+      );
+    })
   );
   self.skipWaiting();
 });
@@ -20,27 +30,29 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(
-        keys.map((key) => {
-          if (key !== CACHE_NAME) {
-            return caches.delete(key);
-          }
-        })
-      )
+      Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))
     )
   );
   self.clients.claim();
 });
 
 self.addEventListener("fetch", (event) => {
-  const req = event.request;
-
-  if (req.method !== "GET") return;
+  const request = event.request;
+  if (request.method !== "GET") return;
 
   event.respondWith(
-    caches.match(req).then((cached) => {
+    caches.match(request).then((cached) => {
       if (cached) return cached;
-      return fetch(req);
+
+      return fetch(request)
+        .then((response) => {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(request, clone);
+          });
+          return response;
+        })
+        .catch(() => caches.match("./index.html"));
     })
   );
 });

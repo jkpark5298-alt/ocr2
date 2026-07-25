@@ -6,8 +6,20 @@
   "display": "standalone",
   "background_color": "#f8fafc",
   "theme_color": "#0f172a",
-  "description": "표 이미지에서 편명, 주기장, R/O L/D 이름을 OCR로 추출하는 앱",
+  "description": "표 이미지에서 편명, 주기장, R/O L/D 이름을 OCR로 추출·검색하는 앱",
   "lang": "ko",
-  "icons": []
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
 }
-
