@@ -55,10 +55,11 @@ const HEADER_SCAN_RATIO = { x1: 0.00, y1: 0.00, x2: 1.00, y2: 0.16 };
 const BODY_SCAN_RATIO = { x1: 0.00, y1: 0.10, x2: 1.00, y2: 0.96 };
 
 // 외항사스케줄 8열 대략 비율
+// ETD | 편명 | 등록기호 | DEP | ARR | 주기장 | R/O L/D | T/O
 const FIXED_COLUMN_HINTS = {
-  flight: { x0r: 0.12, x1r: 0.26 },
-  stand:  { x0r: 0.60, x1r: 0.73 },
-  name:   { x0r: 0.73, x1r: 0.90 }
+  flight: { x0r: 0.10, x1r: 0.25 },
+  stand:  { x0r: 0.54, x1r: 0.66 },
+  name:   { x0r: 0.66, x1r: 0.86 }
 };
 
 const IMAGE_SCALE = 1.35;
@@ -307,45 +308,49 @@ function preprocessFullImage(img) {
 function preprocessColumn(canvas, type) {
   const srcW = Math.max(1, canvas.width);
   const srcH = Math.max(1, canvas.height);
-  // 너무 좁은 입력은 먼저 확대해서 Tesseract 최소 폭 오류를 피함
-  const minW = 64;
-  const scaleUp = srcW < minW ? minW / srcW : 1;
+  const minW = type === "name" ? 96 : 72;
+  const scaleUp = Math.max(1, minW / srcW, type === "name" ? 1.2 : 1);
   const baseW = Math.max(minW, Math.floor(srcW * scaleUp));
-  const baseH = Math.max(32, Math.floor(srcH * scaleUp));
+  const baseH = Math.max(48, Math.floor(srcH * scaleUp));
 
   const out = createCanvas(baseW, baseH);
   const ctx = out.getContext("2d");
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, out.width, out.height);
 
-  const padX = Math.min(8, Math.floor(out.width * 0.08));
-  const drawW = Math.max(8, out.width - padX * 2);
-  ctx.imageSmoothingEnabled = false;
+  const padX = Math.min(12, Math.floor(out.width * 0.06));
+  const drawW = Math.max(16, out.width - padX * 2);
+  ctx.imageSmoothingEnabled = true;
   ctx.drawImage(canvas, 0, 0, srcW, srcH, padX, 0, drawW, out.height);
 
   const imageData = ctx.getImageData(0, 0, out.width, out.height);
   const data = imageData.data;
 
+  // 평균 밝기 기준으로 임계값 잡아 반전/노이즈를 줄임
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    count += 1;
+  }
+  const mean = sum / Math.max(1, count);
+  const darkText = mean > 120; // 밝은 배경이면 글자가 더 어두움
+
   for (let i = 0; i < data.length; i += 4) {
     const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
     let v = gray;
 
-    if (type === "flight") {
-      if (gray > 190) v = 255;
-      else if (gray < 160) v = 0;
-      else v = gray > 175 ? 255 : 0;
-    } else if (type === "stand") {
-      if (gray > 190) v = 255;
-      else if (gray < 155) v = 0;
-      else v = gray > 172 ? 255 : 0;
-    } else if (type === "name") {
-      if (gray > 210) v = 255;
-      else if (gray < 120) v = 0;
-      else v = gray;
+    if (type === "name") {
+      // 한글은 강한 이진화 대신 대비만 살림
+      const contrasted = darkText
+        ? Math.max(0, Math.min(255, (gray - mean) * 1.35 + 180))
+        : Math.max(0, Math.min(255, (mean - gray) * 1.35 + 180));
+      v = contrasted > 200 ? 255 : contrasted < 90 ? 0 : contrasted;
+    } else if (type === "flight" || type === "stand") {
+      const thr = mean * (darkText ? 0.92 : 1.08);
+      v = darkText ? (gray < thr ? 0 : 255) : (gray > thr ? 0 : 255);
     } else {
-      if (gray > 210) v = 255;
-      else if (gray < 140) v = 0;
-      else v = gray;
+      v = gray > mean ? 255 : 0;
     }
 
     data[i] = v;
@@ -1484,15 +1489,37 @@ async function extractRowsBySeparatedColumns(file) {
     pass.nameRowsY
   );
 
-  const rows = dedupeRows(
-    mergedRows
-      .filter((row) => row.flightNo || row.stand)
-      .filter(isSearchMatched)
+  const keyword = getSearchKeyword();
+  const searchType = getSearchType();
+  const namedCount = mergedRows.filter((row) => row.name).length;
+  const baseRows = dedupeRows(
+    mergedRows.filter((row) => row.flightNo || row.stand || row.name)
   );
+
+  let rows = baseRows;
+  let searchNote = "";
+
+  if (keyword && searchType === "name" && namedCount === 0) {
+    // 이름 열이 비어 있으면 검색어로 전부 탈락하므로 검색을 적용하지 않음
+    searchNote = "이름 열 인식 실패 → 검색 미적용(전체 표시)";
+  } else if (keyword) {
+    rows = baseRows.filter(isSearchMatched);
+    if (!rows.length && baseRows.length) {
+      searchNote = `검색어 "${keyword}" 일치 없음 → 전체 ${baseRows.length}건 표시`;
+      rows = baseRows;
+      if (searchValueEl) searchValueEl.value = "";
+    }
+  }
 
   const debugText = [
     "[MODE]",
     usedMode,
+    "",
+    "[SEARCH]",
+    `type=${searchType}`,
+    `keyword=${keyword || "(empty)"}`,
+    `namedCount=${namedCount}`,
+    searchNote || "ok",
     "",
     "[SPEED]",
     "imageScale=" + IMAGE_SCALE,
@@ -1535,7 +1562,7 @@ async function extractRowsBySeparatedColumns(file) {
     ].join(" | ");
   }).join("\n\n");
 
-  return { rows, debugText, lineDebug };
+  return { rows, debugText, lineDebug, searchNote };
 }
 
 if (runBtn) {
@@ -1553,7 +1580,7 @@ if (runBtn) {
       if (ocrLinesOutputEl) ocrLinesOutputEl.value = "";
       if (copyOutputEl) copyOutputEl.value = "";
 
-      const { rows, debugText, lineDebug } = await extractRowsBySeparatedColumns(currentFile);
+      const { rows, debugText, lineDebug, searchNote } = await extractRowsBySeparatedColumns(currentFile);
 
       lastRows = rows;
       renderTable(lastRows, selectedColumns);
@@ -1562,7 +1589,11 @@ if (runBtn) {
       if (ocrRawOutputEl) ocrRawOutputEl.value = debugText;
       if (ocrLinesOutputEl) ocrLinesOutputEl.value = lineDebug;
 
-      setStatus(`완료 (${lastRows.length}건)`);
+      setStatus(
+        searchNote
+          ? `완료 (${lastRows.length}건) · ${searchNote}`
+          : `완료 (${lastRows.length}건)`
+      );
     } catch (err) {
       console.error(err);
       setStatus("오류 발생");
